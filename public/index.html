@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mod Nhạc Sảnh — Music_Login Packer</title>
+<style>
+  :root{
+    --bg:#0b0d12; --panel:#14171f; --panel2:#1a1e29; --border:#262b3a;
+    --text:#eef0f6; --muted:#8890a8; --accent:#e8b34d; --accent2:#4ddba0;
+    --danger:#ff6b6b;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; font-family:'Segoe UI',system-ui,-apple-system,sans-serif;
+    background:
+      radial-gradient(circle at 20% -10%, rgba(232,179,77,.08), transparent 40%),
+      radial-gradient(circle at 100% 0%, rgba(77,219,160,.06), transparent 45%),
+      #0b0d12;
+    color:var(--text); min-height:100vh; padding:32px 16px;
+  }
+  .wrap{max-width:640px; margin:0 auto}
+  .eyebrow{font-size:.72rem; letter-spacing:.14em; text-transform:uppercase; color:var(--accent); font-weight:700; margin-bottom:8px}
+  h1{font-size:1.6rem; margin:0 0 6px; letter-spacing:-.01em}
+  .sub{color:var(--muted); font-size:.88rem; margin-bottom:28px; line-height:1.6}
+  .sub code{background:var(--panel2); padding:1px 6px; border-radius:4px; font-size:.82em}
+  .card{background:var(--panel); border:1px solid var(--border); border-radius:16px; padding:24px; margin-bottom:16px}
+  .card h2{font-size:.95rem; margin:0 0 4px; display:flex; align-items:center; gap:8px}
+  .card .stepnum{width:22px; height:22px; border-radius:50%; background:var(--panel2); border:1px solid var(--border); display:inline-flex; align-items:center; justify-content:center; font-size:.72rem; color:var(--accent); font-weight:700}
+  .card .desc{color:var(--muted); font-size:.8rem; margin:6px 0 16px; line-height:1.5}
+  #drop{border:2px dashed var(--border); border-radius:12px; padding:32px 16px; text-align:center; cursor:pointer; transition:.15s; background:var(--panel2)}
+  #drop:hover, #drop.drag{border-color:var(--accent)}
+  #drop .big{font-size:.95rem; margin-bottom:4px}
+  #drop .small{color:var(--muted); font-size:.76rem}
+  input[type=file]{display:none}
+  #fileChip{display:none; align-items:center; gap:10px; background:var(--panel2); border:1px solid var(--border); border-radius:10px; padding:10px 14px; margin-top:12px; font-size:.82rem}
+  #fileChip .name{font-family:Consolas,'SF Mono',monospace; word-break:break-all; flex:1}
+  #fileChip .size{color:var(--muted); font-size:.72rem}
+  #fileChip .x{cursor:pointer; color:var(--muted); font-weight:700; padding:0 4px}
+  #fileChip .x:hover{color:var(--danger)}
+  .row{display:flex; align-items:center; gap:10px; margin-top:14px}
+  .row label{font-size:.78rem; color:var(--muted); flex-shrink:0}
+  .row input[type=text]{
+    flex:1; background:var(--panel2); border:1px solid var(--border); color:var(--text);
+    padding:8px 10px; border-radius:8px; font-size:.8rem; font-family:Consolas,'SF Mono',monospace;
+  }
+  .pathPreview{font-family:Consolas,'SF Mono',monospace; font-size:.76rem; color:var(--muted); background:var(--panel2); border:1px solid var(--border); border-radius:8px; padding:10px 12px; margin-top:14px; line-height:1.7; word-break:break-all}
+  .pathPreview .hl{color:var(--accent); font-weight:700}
+  .pathPreview .root{color:var(--accent2)}
+  button{width:100%; background:var(--accent); color:#1a1206; border:none; padding:13px 14px; border-radius:10px; font-weight:700; font-size:.88rem; cursor:pointer; margin-top:16px}
+  button:hover:not(:disabled){filter:brightness(1.08)}
+  button:disabled{opacity:.35; cursor:not-allowed}
+  .warnbox{background:rgba(255,107,107,.08); border:1px solid rgba(255,107,107,.28); color:#ff9d9d; padding:10px 14px; border-radius:10px; font-size:.8rem; margin-top:14px; line-height:1.5}
+  .okbox{background:rgba(77,219,160,.08); border:1px solid rgba(77,219,160,.28); color:var(--accent2); padding:10px 14px; border-radius:10px; font-size:.8rem; margin-top:14px; line-height:1.5; display:none; white-space:pre-wrap}
+  .convertNote{background:rgba(232,179,77,.08); border:1px solid rgba(232,179,77,.28); color:var(--accent); padding:10px 14px; border-radius:10px; font-size:.78rem; margin-top:14px; line-height:1.55; display:none}
+  .footnote{color:var(--muted); font-size:.72rem; text-align:center; margin-top:22px; line-height:1.6}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="eyebrow">Music_Login · 985479411.wem</div>
+  <h1>Mod Nhạc Sảnh</h1>
+  <div class="sub">
+    Upload <code>.wem</code> / <code>.wav</code> / <code>.mp3</code> — server sẽ chuyển sang PCM (nếu cần),
+    đo duration chính xác, patch lại <code>Music_Login.bnk</code> cho khớp, rồi đóng gói tất cả vào một file zip.
+  </div>
+
+  <div class="card">
+    <h2><span class="stepnum">1</span>Chọn file âm thanh</h2>
+    <div class="desc">.wem giữ nguyên (có thể nhập tay duration nếu biết) · .wav / .mp3 tự động chuyển PCM + đo duration.</div>
+
+    <div id="drop">
+      <div class="big">📂 Kéo thả file vào đây, hoặc bấm để chọn</div>
+      <div class="small">File được xử lý trên server, không lưu lại sau khi trả kết quả</div>
+      <input type="file" id="fileInput" accept=".wem,.wav,.mp3">
+    </div>
+
+    <div id="fileChip">
+      <span class="icon">🎵</span>
+      <span class="name" id="fileName"></span>
+      <span class="size" id="fileSize"></span>
+      <span class="x" id="fileClear">✕</span>
+    </div>
+
+    <div class="row" id="manualDurRow" style="display:none">
+      <label for="manualDur">Duration (ms), tuỳ chọn:</label>
+      <input type="text" id="manualDur" placeholder="vd: 126134.732">
+    </div>
+
+    <div class="warnbox" id="warnBox" style="display:none"></div>
+    <div class="convertNote" id="convertNote" style="display:none"></div>
+  </div>
+
+  <div class="card">
+    <h2><span class="stepnum">2</span>Nội dung gói zip</h2>
+    <div class="pathPreview">
+      <span class="root">Nhac_sanh.zip</span>/com.garena.game.kgvn/files/Extra/2022.V3/Sound_DLC/Android/<span class="hl">985479411.wem</span><br>
+      <span class="root">Nhac_sanh.zip</span>/com.garena.game.kgvn/files/Extra/2022.V3/Sound_DLC/Android/<span class="hl">Music_Login.bnk</span> <span style="color:var(--muted)">(đã patch duration)</span>
+    </div>
+  </div>
+
+  <button id="buildBtn" disabled>⬇ Tạo file Nhac_sanh.zip</button>
+  <div class="okbox" id="okBox"></div>
+
+  <div class="footnote">
+    Đường dẫn <code>Music_Login.bnk</code> trong zip là giả định — kiểm tra lại vị trí thật của file này
+    trong thư mục game trước khi giải nén đè, có thể khác thư mục so với file .wem.
+  </div>
+</div>
+
+<script>
+const fileInput = document.getElementById('fileInput');
+const drop = document.getElementById('drop');
+const fileChip = document.getElementById('fileChip');
+const fileNameEl = document.getElementById('fileName');
+const fileSizeEl = document.getElementById('fileSize');
+const fileClear = document.getElementById('fileClear');
+const warnBox = document.getElementById('warnBox');
+const okBox = document.getElementById('okBox');
+const convertNote = document.getElementById('convertNote');
+const buildBtn = document.getElementById('buildBtn');
+const manualDurRow = document.getElementById('manualDurRow');
+const manualDur = document.getElementById('manualDur');
+
+let selectedFile = null;
+
+function fmtBytes(n){
+  if (n > 1024*1024) return (n/1024/1024).toFixed(2)+' MB';
+  if (n > 1024) return (n/1024).toFixed(1)+' KB';
+  return n+' B';
+}
+function getExt(name){ const m = /\.([a-z0-9]+)$/i.exec(name); return m ? m[1].toLowerCase() : ''; }
+
+function setFile(file){
+  warnBox.style.display = 'none';
+  okBox.style.display = 'none';
+  convertNote.style.display = 'none';
+  manualDurRow.style.display = 'none';
+  if (!file) return;
+  const ext = getExt(file.name);
+  if (ext === 'wem') {
+    manualDurRow.style.display = 'flex';
+    convertNote.style.display = 'block';
+    convertNote.textContent = '.wem được giữ nguyên, không re-encode. Duration của Wwise-Vorbis không đo được tự động — nếu bạn biết trước (vd từ tool phân tích bnk), nhập vào ô bên trên để patch bnk; để trống thì bnk sẽ không bị đổi.';
+  } else if (ext === 'wav' || ext === 'mp3') {
+    convertNote.style.display = 'block';
+    convertNote.textContent = `File .${ext} sẽ được server chuyển sang PCM 16-bit (.wav đóng gói dạng .wem) và tự động đo duration chính xác để patch vào Music_Login.bnk.`;
+  } else {
+    warnBox.style.display = 'block';
+    warnBox.textContent = `⚠ "${file.name}" không phải .wem, .wav hay .mp3.`;
+    buildBtn.disabled = true;
+    return;
+  }
+  selectedFile = file;
+  fileNameEl.textContent = file.name;
+  fileSizeEl.textContent = fmtBytes(file.size);
+  fileChip.style.display = 'flex';
+  buildBtn.disabled = false;
+}
+
+drop.addEventListener('click', ()=>fileInput.click());
+drop.addEventListener('dragover', e=>{e.preventDefault(); drop.classList.add('drag');});
+drop.addEventListener('dragleave', ()=>drop.classList.remove('drag'));
+drop.addEventListener('drop', e=>{
+  e.preventDefault(); drop.classList.remove('drag');
+  if (e.dataTransfer.files.length) setFile(e.dataTransfer.files[0]);
+});
+fileInput.addEventListener('change', e=>{ if (e.target.files.length) setFile(e.target.files[0]); });
+fileClear.addEventListener('click', e=>{
+  e.stopPropagation();
+  selectedFile = null;
+  fileInput.value = '';
+  fileChip.style.display = 'none';
+  manualDurRow.style.display = 'none';
+  warnBox.style.display = 'none';
+  convertNote.style.display = 'none';
+  buildBtn.disabled = true;
+});
+
+buildBtn.addEventListener('click', async ()=>{
+  if (!selectedFile) return;
+  buildBtn.disabled = true;
+  buildBtn.textContent = 'Đang xử lý trên server...';
+  warnBox.style.display = 'none';
+  okBox.style.display = 'none';
+  try{
+    const form = new FormData();
+    form.append('audio', selectedFile);
+    if (manualDur.value.trim()) form.append('durationMs', manualDur.value.trim());
+
+    const resp = await fetch('/api/build', { method: 'POST', body: form });
+    if (!resp.ok) {
+      const err = await resp.json().catch(()=>({error:'Lỗi không xác định'}));
+      throw new Error(err.error || 'Server lỗi');
+    }
+
+    const reportHeader = resp.headers.get('X-Patch-Report');
+    const blob = await resp.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'Nhac_sanh.zip';
+    a.click();
+
+    okBox.style.display = 'block';
+    let msg = '✅ Đã tạo Nhac_sanh.zip';
+    if (reportHeader) {
+      try{
+        const report = JSON.parse(decodeURIComponent(reportHeader));
+        if (report.warning) msg += '\n⚠ ' + report.warning;
+        else if (report.durationMs != null) {
+          msg += `\nDuration mới: ${report.durationMs} ms (nguồn: ${report.durationSource})`;
+          for (const f of report.fields) msg += `\n[${f.kind}] ${f.ownerId}: ${f.oldValueMs} ms → ${f.newValueMs} ms (${f.offsetCount} chỗ)`;
+        }
+      }catch(e){}
+    }
+    okBox.textContent = msg;
+  }catch(err){
+    warnBox.style.display = 'block';
+    warnBox.textContent = '⚠ ' + err.message;
+  }finally{
+    buildBtn.disabled = false;
+    buildBtn.textContent = '⬇ Tạo file Nhac_sanh.zip';
+  }
+});
+</script>
+</body>
+</html>
