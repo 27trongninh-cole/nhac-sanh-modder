@@ -10,6 +10,32 @@ Render — miễn phí cho project nhỏ, không cần cài gì trên máy ngoà
 1. Tạo tài khoản GitHub (nếu chưa có): https://github.com/signup
 2. Tạo tài khoản Render: https://dashboard.render.com/register — có thể đăng nhập
    thẳng bằng GitHub cho nhanh (Render sẽ tự xin quyền truy cập repo sau).
+3. Tài khoản Supabase (bạn đã có sẵn) và tài khoản/không cần đăng ký gì thêm ở
+   [catbox.moe](https://catbox.moe/) — upload file không cần tài khoản.
+
+---
+
+## Bước 0.5 — Tạo bảng trên Supabase
+
+1. Vào project Supabase của bạn → **SQL Editor** → **New query**.
+2. Dán và chạy đoạn SQL sau (chỉ cần chạy 1 lần):
+
+```sql
+create table if not exists nhac_sanh_active_config (
+  id int primary key default 1,
+  source_id bigint not null default 985479411,
+  bnk_url text,
+  updated_at timestamptz not null default now(),
+  updated_by text,
+  constraint singleton check (id = 1)
+);
+```
+
+3. Vào **Project Settings → API**, ghi lại 2 giá trị sẽ cần ở Bước 2:
+   - **Project URL** (dạng `https://xxxxx.supabase.co`) → dùng cho biến `SUPABASE_URL`.
+   - **service_role key** (mục "Project API keys", **không phải** `anon` `public` key)
+     → dùng cho biến `SUPABASE_SERVICE_KEY`. Key này có toàn quyền, tuyệt đối không
+     dán vào code hay commit lên GitHub — chỉ nhập vào Environment Variables của Render.
 
 ---
 
@@ -64,7 +90,16 @@ Render build từ một repo Git, nên cần đẩy code lên GitHub trước.
 | **Start Command** | `npm start` |
 | **Instance Type** | **Free** |
 
-6. Bấm **Create Web Service**.
+6. Cuộn xuống phần **Environment Variables** ngay trong form tạo service (hoặc thêm sau
+   trong tab **Environment**), thêm:
+
+| Key | Value |
+|---|---|
+| `ADMIN_PASSWORD` | tự đặt một mật khẩu mạnh, dùng để đăng nhập trang `/admin` |
+| `SUPABASE_URL` | Project URL lấy ở Bước 0.5 |
+| `SUPABASE_SERVICE_KEY` | service_role key lấy ở Bước 0.5 (không phải anon key) |
+
+7. Bấm **Create Web Service**.
 
 Render sẽ tự clone repo, chạy `npm install` (bước này tự tải binary `ffmpeg-static` /
 `ffprobe-static` — không cần bạn làm gì thêm), rồi chạy `npm start`. Theo dõi log build
@@ -94,6 +129,42 @@ curl -D - -o Nhac_sanh.zip \
 ```
 
 Header `X-Patch-Report` trong response sẽ in ra JSON tóm tắt các field duration đã patch.
+
+---
+
+---
+
+## Bước 4 — Dùng UptimeRobot để chống sleep (tuỳ chọn)
+
+Gói Free của Render ngủ sau ~15 phút không có request. Dùng UptimeRobot (miễn phí)
+ping định kỳ để giữ instance luôn tỉnh:
+
+1. Đăng ký https://uptimerobot.com/ (miễn phí).
+2. **Add New Monitor**:
+   - Monitor Type: **HTTP(s)**
+   - Friendly Name: tuỳ ý (vd `nhac-sanh-modder`)
+   - URL: `https://nhac-sanh-modder-xxxx.onrender.com/api/health`
+   - Monitoring Interval: **5 phút** (đủ dày để không cho instance kịp ngủ)
+3. **Create Monitor**.
+
+Lưu ý: đây là gọi liên tục ngoài giờ bạn dùng thật, tính vào 750 giờ/tháng free của
+Render — nếu chỉ cần test/demo thỉnh thoảng, có thể tắt monitor khi không dùng để tiết
+kiệm quota, chỉ bật lại khi cần demo.
+
+---
+
+## Bước 5 — Dùng trang Admin để cập nhật khi game update
+
+Vào `https://nhac-sanh-modder-xxxx.onrender.com/admin`, đăng nhập bằng đúng giá trị
+`ADMIN_PASSWORD` đã set ở Bước 2. Từ đây có thể:
+1. Vào https://catbox.moe/, upload file `Music_Login.bnk` mới tải từ game → copy link
+   (dạng `https://files.catbox.moe/xxxxxx.bnk`).
+2. Dán link đó vào ô **Link Catbox**, nhập **Source ID** mới nếu game đổi bài
+   (không cần sửa code/deploy lại).
+- Upload **`Music_Login.bnk`** mới mỗi khi game cập nhật bank.
+
+Xem chi tiết cơ chế + giới hạn (cấu hình mất khi redeploy) trong phần "Admin panel"
+của `README.md`.
 
 ---
 

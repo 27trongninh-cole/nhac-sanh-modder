@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Admin — Nhạc Sảnh Modder</title>
+<style>
+  :root{
+    --bg:#0b0d12; --panel:#14171f; --panel2:#1a1e29; --border:#262b3a;
+    --text:#eef0f6; --muted:#8890a8; --accent:#e8b34d; --accent2:#4ddba0; --danger:#ff6b6b;
+  }
+  *{box-sizing:border-box}
+  body{margin:0; font-family:'Segoe UI',system-ui,-apple-system,sans-serif; background:#0b0d12; color:var(--text); min-height:100vh; padding:32px 16px}
+  .wrap{max-width:600px; margin:0 auto}
+  .eyebrow{font-size:.72rem; letter-spacing:.14em; text-transform:uppercase; color:var(--accent); font-weight:700; margin-bottom:8px}
+  h1{font-size:1.4rem; margin:0 0 20px}
+  .card{background:var(--panel); border:1px solid var(--border); border-radius:16px; padding:22px; margin-bottom:16px}
+  .card h2{font-size:.9rem; margin:0 0 4px}
+  .card .desc{color:var(--muted); font-size:.78rem; margin:4px 0 12px; line-height:1.5}
+  label{display:block; font-size:.78rem; color:var(--muted); margin:12px 0 6px}
+  input[type=password],input[type=text],input[type=number]{
+    width:100%; background:var(--panel2); border:1px solid var(--border); color:var(--text);
+    padding:9px 10px; border-radius:8px; font-size:.85rem; font-family:Consolas,'SF Mono',monospace;
+  }
+  button{background:var(--accent); color:#1a1206; border:none; padding:11px 14px; border-radius:9px; font-weight:700; font-size:.85rem; cursor:pointer; margin-top:14px; width:100%}
+  button:disabled{opacity:.35; cursor:not-allowed}
+  button.secondary{background:var(--panel2); color:var(--text); border:1px solid var(--border); font-weight:600}
+  .statusRow{display:flex; justify-content:space-between; gap:10px; font-size:.8rem; padding:6px 0; border-bottom:1px solid var(--border)}
+  .statusRow:last-child{border-bottom:none}
+  .statusRow .k{color:var(--muted); flex-shrink:0}
+  .statusRow .v{font-family:Consolas,'SF Mono',monospace; text-align:right; word-break:break-all}
+  .msg{font-size:.8rem; border-radius:9px; padding:10px 12px; margin-top:12px; line-height:1.5; display:none; white-space:pre-wrap}
+  .msg.ok{display:block; background:rgba(77,219,160,.08); border:1px solid rgba(77,219,160,.28); color:var(--accent2)}
+  .msg.err{display:block; background:rgba(255,107,107,.08); border:1px solid rgba(255,107,107,.28); color:#ff9d9d}
+  .msg.warn{display:block; background:rgba(232,179,77,.08); border:1px solid rgba(232,179,77,.28); color:var(--accent)}
+  .note{color:var(--muted); font-size:.74rem; line-height:1.5; margin-top:10px}
+  #gate{max-width:340px; margin:80px auto 0}
+</style>
+</head>
+<body>
+
+<div class="wrap" id="gate">
+  <div class="eyebrow">Admin</div>
+  <h1>Đăng nhập</h1>
+  <div class="card">
+    <label>Mật khẩu admin</label>
+    <input type="password" id="pw" placeholder="ADMIN_PASSWORD">
+    <button id="loginBtn">Đăng nhập</button>
+    <div class="msg" id="loginMsg"></div>
+  </div>
+</div>
+
+<div class="wrap" id="main" style="display:none">
+  <div class="eyebrow">Admin</div>
+  <h1>Nhạc Sảnh Modder — Cấu hình</h1>
+
+  <div class="card">
+    <h2>Trạng thái hiện tại</h2>
+    <div id="statusBox"></div>
+    <button class="secondary" id="refreshBtn" style="margin-top:14px">🔄 Refresh</button>
+  </div>
+
+  <div class="card">
+    <h2>Cập nhật khi game update</h2>
+    <div class="desc">Upload file <code>Music_Login.bnk</code> mới lên <a href="https://catbox.moe/" target="_blank" style="color:var(--accent)">catbox.moe</a>, dán link vào đây cùng Source ID mới (nếu có đổi).</div>
+
+    <label>Link Catbox (.bnk)</label>
+    <input type="text" id="bnkUrlInput" placeholder="https://files.catbox.moe/xxxxxx.bnk">
+
+    <label>Source ID mới</label>
+    <input type="number" id="sourceIdInput" placeholder="vd: 520249413">
+
+    <div class="note">Để trống ô nào thì giữ nguyên giá trị đang active của ô đó. Cần điền ít nhất 1 ô.</div>
+
+    <button id="saveBtn">💾 Lưu cấu hình</button>
+    <button class="secondary" id="resetBtn">↩ Reset về bản mặc định (bundle trong repo)</button>
+    <div class="msg" id="saveMsg"></div>
+  </div>
+
+  <div class="note">
+    ⚠️ Server tải file .bnk từ link Catbox mỗi khi cache hết hạn (~30s) hoặc ngay sau khi bạn
+    lưu cấu hình mới — nên nếu bạn XOÁ file trên Catbox mà không cập nhật link mới ở đây,
+    lần build tiếp theo sẽ lỗi. Cấu hình (Source ID + link) lưu trên Supabase nên sẽ
+    <b>không mất khi Render deploy lại</b>.
+  </div>
+</div>
+
+<script>
+let pw = sessionStorage.getItem('admin_pw') || '';
+
+const gate = document.getElementById('gate');
+const main = document.getElementById('main');
+const pwInput = document.getElementById('pw');
+const loginBtn = document.getElementById('loginBtn');
+const loginMsg = document.getElementById('loginMsg');
+
+async function api(path, opts = {}) {
+  opts.headers = Object.assign({ 'Content-Type': 'application/json' }, opts.headers, { 'X-Admin-Password': pw });
+  const resp = await fetch(path, opts);
+  const data = await resp.json();
+  if (!resp.ok) throw new Error(data.error || 'Lỗi không xác định');
+  return data;
+}
+
+async function tryLogin(silent = false) {
+  try {
+    const data = await api('/api/admin/status');
+    gate.style.display = 'none';
+    main.style.display = 'block';
+    renderStatus(data);
+  } catch (e) {
+    if (!silent) {
+      loginMsg.className = 'msg err';
+      loginMsg.textContent = '⚠ ' + e.message;
+    }
+    sessionStorage.removeItem('admin_pw');
+  }
+}
+
+loginBtn.addEventListener('click', () => {
+  pw = pwInput.value;
+  sessionStorage.setItem('admin_pw', pw);
+  tryLogin();
+});
+pwInput.addEventListener('keydown', e => { if (e.key === 'Enter') loginBtn.click(); });
+
+function renderStatus(data) {
+  if (!data.supabaseConfigured) {
+    document.getElementById('statusBox').innerHTML =
+      `<div class="msg warn" style="display:block">⚠ Supabase chưa được cấu hình trên server (thiếu SUPABASE_URL / SUPABASE_SERVICE_KEY). Đang dùng file .bnk mặc định bundle sẵn, và không thể lưu cập nhật mới cho tới khi set 2 biến môi trường này.</div>`;
+  }
+  const rows = [
+    ['Source ID hiện tại', data.sourceId],
+    ['Link Catbox đang dùng', data.bnkUrl || '— (đang dùng bản mặc định)'],
+    ['Nguồn .bnk', data.isDefault ? 'Bundle mặc định' : 'Từ Catbox (qua admin)'],
+    ['Kích thước .bnk', (data.bnkSize / 1024 / 1024).toFixed(2) + ' MB'],
+    ['Cập nhật lúc', data.updatedAt ? new Date(data.updatedAt).toLocaleString('vi-VN') : '—'],
+    ['Ghi chú người cập nhật', data.updatedBy || '—']
+  ];
+  document.getElementById('statusBox').innerHTML += rows.map(([k, v]) =>
+    `<div class="statusRow"><span class="k">${k}</span><span class="v">${v}</span></div>`
+  ).join('');
+  document.getElementById('sourceIdInput').placeholder = 'hiện tại: ' + data.sourceId;
+  document.getElementById('bnkUrlInput').placeholder = data.bnkUrl || 'https://files.catbox.moe/xxxxxx.bnk';
+}
+
+document.getElementById('refreshBtn').addEventListener('click', async () => {
+  try {
+    document.getElementById('statusBox').innerHTML = '';
+    renderStatus(await api('/api/admin/status'));
+  } catch (e) { alert(e.message); }
+});
+
+document.getElementById('saveBtn').addEventListener('click', async () => {
+  const saveMsg = document.getElementById('saveMsg');
+  saveMsg.className = 'msg'; saveMsg.style.display = 'none';
+  const sourceId = document.getElementById('sourceIdInput').value.trim();
+  const bnkUrl = document.getElementById('bnkUrlInput').value.trim();
+  if (!sourceId && !bnkUrl) {
+    saveMsg.className = 'msg err';
+    saveMsg.textContent = '⚠ Cần ít nhất 1 trong 2: link Catbox mới hoặc Source ID mới.';
+    return;
+  }
+  const btn = document.getElementById('saveBtn');
+  btn.disabled = true;
+  btn.textContent = 'Đang tải & xác thực file .bnk...';
+  try {
+    const data = await api('/api/admin/update', {
+      method: 'POST',
+      body: JSON.stringify({ sourceId: sourceId || undefined, bnkUrl: bnkUrl || undefined })
+    });
+    saveMsg.className = 'msg ok';
+    saveMsg.textContent = `✅ Đã lưu. Xác nhận: track ${data.validated.trackIds.join(', ')}, ${data.validated.fieldCount} field duration tìm thấy.`;
+    document.getElementById('sourceIdInput').value = '';
+    document.getElementById('bnkUrlInput').value = '';
+    document.getElementById('statusBox').innerHTML = '';
+    renderStatus(await api('/api/admin/status'));
+  } catch (e) {
+    saveMsg.className = 'msg err';
+    saveMsg.textContent = '⚠ ' + e.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '💾 Lưu cấu hình';
+  }
+});
+
+document.getElementById('resetBtn').addEventListener('click', async () => {
+  if (!confirm('Reset về bản .bnk mặc định bundle trong repo? Cấu hình admin hiện tại sẽ mất.')) return;
+  try {
+    await api('/api/admin/reset', { method: 'POST' });
+    document.getElementById('statusBox').innerHTML = '';
+    renderStatus(await api('/api/admin/status'));
+  } catch (e) { alert(e.message); }
+});
+
+if (pw) tryLogin(true);
+else { gate.style.display = 'block'; }
+</script>
+</body>
+</html>

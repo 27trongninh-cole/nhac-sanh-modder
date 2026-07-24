@@ -8,22 +8,120 @@ const multer = require('multer');
 const archiver = require('archiver');
 
 const { getDurationMs, toPcmWavBuffer } = require('./lib/audioConvert');
-const { patchDuration } = require('./lib/bnkPatcher');
+const { patchDuration, locateDurationFields } = require('./lib/bnkPatcher');
+const supabaseStore = require('./lib/supabaseStore');
+const bnkCache = require('./lib/bnkCache');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || null;
 
-const TARGET_SOURCE_ID = 985479411; // nhạc sảnh Media ID, referenced by Music_Login.bnk
-const ZIP_WEM_PATH = 'com.garena.game.kgvn/files/Extra/2022.V3/Sound_DLC/Android/985479411.wem';
-const ZIP_BNK_PATH = 'com.garena.game.kgvn/files/Extra/2022.V3/Sound_DLC/Android/Music_Login.bnk';
-const REFERENCE_BNK_PATH = path.join(__dirname, 'data', 'Music_Login.bnk');
+const ZIP_DIR = 'com.garena.game.kgvn/files/Extra/2022.V3/Sound_DLC/Android/';
 
 const upload = multer({ dest: os.tmpdir(), limits: { fileSize: 100 * 1024 * 1024 } });
 
+app.use(express.json());
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
 app.get('/api/health', (req, res) => res.json({ ok: true }));
 
+// ---- admin auth ----
+function requireAdmin(req, res, next) {
+  if (!ADMIN_PASSWORD) {
+    return res.status(503).json({ ok: false, error: 'ADMIN_PASSWORD chưa được cấu hình trên server (Environment Variable). Trang admin bị khoá cho tới khi set biến này.' });
+  }
+  const supplied = req.header('X-Admin-Password');
+  if (supplied !== ADMIN_PASSWORD) {
+    return res.status(401).json({ ok: false, error: 'Sai mật khẩu admin' });
+  }
+  next();
+}
+
+app.get('/api/admin/status', requireAdmin, async (req, res) => {
+  try {
+    const active = await bnkCache.getActive({ forceRefresh: true });
+    res.json({
+      ok: true,
+      supabaseConfigured: supabaseStore.isConfigured(),
+      sourceId: active.sourceId,
+      bnkUrl: active.config ? active.config.bnkUrl : null,
+      isDefault: active.isDefault,
+      updatedAt: active.config ? active.config.updatedAt : null,
+      updatedBy: active.config ? active.config.updatedBy : null,
+      bnkSize: active.bnkBuffer.length
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// Body: { sourceId?: number, bnkUrl?: string (Catbox link), updatedBy?: string }
+// At least one of sourceId / bnkUrl must be provided. Validates by actually
+// downloading the (new or currently active) bnk and confirming the target
+// sourceId's duration fields can be located, BEFORE saving to Supabase — so a
+// bad link or wrong ID never silently breaks /api/build for real users.
+app.post('/api/admin/update', requireAdmin, async (req, res) => {
+  try {
+    if (!supabaseStore.isConfigured()) {
+      return res.status(503).json({ ok: false, error: 'Supabase chưa được cấu hình (thiếu SUPABASE_URL / SUPABASE_SERVICE_KEY trên server)' });
+    }
+
+    const { sourceId: sourceIdRaw, bnkUrl: bnkUrlRaw, updatedBy } = req.body || {};
+    if (!sourceIdRaw && !bnkUrlRaw) {
+      return res.status(400).json({ ok: false, error: 'Cần ít nhất 1 trong 2: Source ID mới hoặc link Catbox mới' });
+    }
+
+    const sourceId = sourceIdRaw ? parseInt(sourceIdRaw, 10) : null;
+    if (sourceIdRaw && !Number.isFinite(sourceId)) {
+      return res.status(400).json({ ok: false, error: 'Source ID không hợp lệ' });
+    }
+    const bnkUrl = bnkUrlRaw ? String(bnkUrlRaw).trim() : null;
+    if (bnkUrl && !/^https?:\/\//i.test(bnkUrl)) {
+      return res.status(400).json({ ok: false, error: 'Link Catbox không hợp lệ (phải bắt đầu bằng http:// hoặc https://)' });
+    }
+
+    const current = await supabaseStore.getConfig();
+    const effectiveBnkUrl = bnkUrl || (current && current.bnkUrl);
+    const effectiveSourceId = sourceId != null ? sourceId : (current ? current.sourceId : bnkCache.DEFAULT_SOURCE_ID);
+
+    if (!effectiveBnkUrl) {
+      return res.status(400).json({ ok: false, error: 'Chưa có link Catbox nào được lưu trước đó — cần nhập link Catbox ở lần cập nhật đầu tiên' });
+    }
+
+    const bnkBuffer = await bnkCache.fetchBuffer(effectiveBnkUrl);
+    const located = locateDurationFields(bnkBuffer, effectiveSourceId);
+    if (!located.ok) {
+      return res.status(400).json({
+        ok: false,
+        error: `Không xác nhận được Source ID ${effectiveSourceId} trong file .bnk tải từ link này: ${located.reason}`
+      });
+    }
+
+    const saved = await supabaseStore.setConfig({ sourceId: effectiveSourceId, bnkUrl: effectiveBnkUrl, updatedBy });
+    bnkCache.invalidate();
+    await bnkCache.getActive({ forceRefresh: true }); // warm the cache immediately
+
+    res.json({ ok: true, config: saved, validated: { trackIds: located.trackIds, fieldCount: located.fields.length } });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.post('/api/admin/reset', requireAdmin, async (req, res) => {
+  try {
+    if (supabaseStore.isConfigured()) {
+      // "reset" = point back at nothing so getActive() falls back to the bundled default
+      await supabaseStore.setConfig({ sourceId: bnkCache.DEFAULT_SOURCE_ID, bnkUrl: null, updatedBy: 'reset' }).catch(() => {});
+    }
+    bnkCache.invalidate();
+    const active = await bnkCache.getActive({ forceRefresh: true });
+    res.json({ ok: true, sourceId: active.sourceId, isDefault: active.isDefault });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ---- main build endpoint ----
 app.post('/api/build', upload.single('audio'), async (req, res) => {
   const file = req.file;
   if (!file) return res.status(400).json({ ok: false, error: 'Thiếu file audio (field "audio")' });
@@ -32,6 +130,9 @@ app.post('/api/build', upload.single('audio'), async (req, res) => {
   const cleanup = () => fs.promises.unlink(file.path).catch(() => {});
 
   try {
+    const active = await bnkCache.getActive();
+    const targetSourceId = active.sourceId;
+
     let wemBytes;
     let durationMs = null;
     let durationSource = null;
@@ -54,25 +155,25 @@ app.post('/api/build', upload.single('audio'), async (req, res) => {
       return res.status(400).json({ ok: false, error: `Định dạng .${ext} không được hỗ trợ (chỉ .wem, .wav, .mp3)` });
     }
 
-    // Patch the bundled reference Music_Login.bnk with the new duration.
+    // Patch the currently active Music_Login.bnk with the new duration.
     let bnkBytes = null;
     let patchReport = null;
     if (durationMs != null) {
-      const original = fs.readFileSync(REFERENCE_BNK_PATH);
-      const result = patchDuration(original, TARGET_SOURCE_ID, durationMs);
+      const result = patchDuration(active.bnkBuffer, targetSourceId, durationMs);
       if (result.ok) {
         bnkBytes = result.buffer;
         patchReport = {
-          durationMs, durationSource,
+          durationMs, durationSource, targetSourceId,
           fields: result.fields.map(f => ({ kind: f.kind, ownerId: f.ownerId, oldValueMs: f.oldValueMs, newValueMs: f.newValueMs, offsetCount: f.offsetCount }))
         };
       } else {
-        patchReport = { warning: result.reason };
+        patchReport = { warning: result.reason, targetSourceId };
       }
     } else {
-      patchReport = { warning: 'Không xác định được duration (file .wem không kèm durationMs) — Music_Login.bnk giữ nguyên, không patch.' };
+      patchReport = { warning: 'Không xác định được duration (file .wem không kèm durationMs) — Music_Login.bnk giữ nguyên, không patch.', targetSourceId };
     }
 
+    const zipWemName = `${targetSourceId}.wem`;
     res.setHeader('Content-Type', 'application/zip');
     res.setHeader('Content-Disposition', 'attachment; filename="Nhac_sanh.zip"');
     res.setHeader('X-Patch-Report', encodeURIComponent(JSON.stringify(patchReport)));
@@ -80,8 +181,8 @@ app.post('/api/build', upload.single('audio'), async (req, res) => {
     const archive = archiver('zip', { zlib: { level: 6 } });
     archive.on('error', err => { throw err; });
     archive.pipe(res);
-    archive.append(wemBytes, { name: ZIP_WEM_PATH });
-    if (bnkBytes) archive.append(bnkBytes, { name: ZIP_BNK_PATH });
+    archive.append(wemBytes, { name: ZIP_DIR + zipWemName });
+    if (bnkBytes) archive.append(bnkBytes, { name: ZIP_DIR + 'Music_Login.bnk' });
     await archive.finalize();
   } catch (err) {
     if (!res.headersSent) {
@@ -94,4 +195,6 @@ app.post('/api/build', upload.single('audio'), async (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`Nhạc sảnh modder server đang chạy tại http://localhost:${PORT}`);
+  if (!ADMIN_PASSWORD) console.log('⚠ ADMIN_PASSWORD chưa được set — trang /admin sẽ bị khoá.');
+  if (!supabaseStore.isConfigured()) console.log('⚠ SUPABASE_URL/SUPABASE_SERVICE_KEY chưa được set — dùng bnk mặc định bundle sẵn, admin update sẽ bị khoá.');
 });

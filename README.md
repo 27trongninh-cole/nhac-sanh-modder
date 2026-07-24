@@ -27,17 +27,61 @@ khác bài gốc.
 ```
 nhac-sanh-modder/
 ├── package.json
+├── README.md
+├── DEPLOY.md
 ├── public/
-│   └── index.html        # frontend (drag&drop upload, gọi /api/build)
+│   ├── index.html         # frontend chính (drag&drop upload, gọi /api/build)
+│   └── admin.html          # trang admin (nhập link Catbox + sourceId mới)
 └── server/
-    ├── index.js           # Express app + endpoint /api/build
+    ├── index.js            # Express app + /api/build, /api/admin/*
     ├── data/
-    │   └── Music_Login.bnk   # bản gốc dùng làm reference để patch (KHÔNG bị ghi đè)
+    │   └── Music_Login.bnk    # bản mặc định bundle sẵn — fallback khi Supabase
+    │                           # chưa cấu hình / chưa có admin nào cập nhật
     └── lib/
-        ├── bnkParser.js    # parser .bnk, port từ bnk-analyzer.html — giữ absolute offset
-        ├── bnkPatcher.js   # định vị + ghi đè field duration trong buffer
-        └── audioConvert.js # ffmpeg-static/ffprobe-static: đo duration + convert PCM
+        ├── bnkParser.js     # parser .bnk, port từ bnk-analyzer.html — giữ absolute offset
+        ├── bnkPatcher.js    # định vị + ghi đè field duration (segment + track) trong buffer
+        ├── audioConvert.js  # ffmpeg-static/ffprobe-static: đo duration + convert PCM
+        ├── supabaseStore.js # đọc/ghi 1 dòng config { sourceId, bnkUrl } trên Supabase
+        └── bnkCache.js      # tải .bnk từ link Catbox, cache in-memory (TTL 30s)
 ```
+
+## Kiến trúc cấu hình động (Supabase + Catbox)
+
+Thay vì upload trực tiếp file `.bnk` (nặng, khó version), admin chỉ nhập **2 giá trị nhỏ**:
+- **Source ID** — Media ID nhạc sảnh hiện tại của game (vd `520249413`).
+- **Link Catbox** — link tới file `Music_Login.bnk` mới nhất, tự upload lên
+  [catbox.moe](https://catbox.moe/) trước.
+
+2 giá trị này lưu trong **1 dòng duy nhất** trên bảng Supabase `nhac_sanh_active_config`
+(đặt tên có tiền tố riêng để dùng ké chung project Supabase khác mà không đụng bảng có
+sẵn) — dữ liệu
+ở ngoài Render nên **sống sót qua mọi lần redeploy** (khác bản trước dùng đĩa local, mất
+config mỗi lần deploy). Khi có request, server:
+1. Đọc config từ Supabase (cache 30 giây để đỡ gọi liên tục).
+2. Tải file `.bnk` từ link Catbox trong config đó (cache theo URL — chỉ tải lại khi URL đổi).
+3. Nếu Supabase chưa cấu hình / chưa có dòng nào / link lỗi → tự fallback về
+   `server/data/Music_Login.bnk` + Source ID mặc định `985479411` bundle sẵn trong repo.
+
+**Bảo mật:** Supabase Service Role Key chỉ nằm trên server (biến môi trường), không bao
+giờ gửi ra browser. Trình duyệt chỉ nói chuyện với `/api/admin/*` của chính app này
+(có khoá bằng `ADMIN_PASSWORD`), không gọi thẳng Supabase.
+
+### Schema Supabase cần tạo (chạy 1 lần trong SQL Editor)
+
+```sql
+create table if not exists nhac_sanh_active_config (
+  id int primary key default 1,
+  source_id bigint not null default 985479411,
+  bnk_url text,
+  updated_at timestamptz not null default now(),
+  updated_by text,
+  constraint singleton check (id = 1)
+);
+```
+
+Không cần thêm RLS policy nào cho client — mọi truy cập đều qua Service Role Key ở
+server (tự động bypass RLS), bảng có thể để RLS mặc định (enabled, không có policy nào
+cho anon/authenticated) mà vẫn hoạt động bình thường.
 
 ## Cách hoạt động (`/api/build`)
 
@@ -48,7 +92,7 @@ nhac-sanh-modder/
      gửi kèm field `durationMs` để vẫn patch bnk; nếu không, bnk giữ nguyên.
    - `.wav` / `.mp3` → `ffprobe` đo duration chính xác (ms), `ffmpeg` transcode sang
      PCM 16-bit (`pcm_s16le`) rồi đóng gói dưới tên `.wem`.
-3. Đọc `server/data/Music_Login.bnk` (reference gốc), gọi `patchDuration()`:
+3. Lấy `.bnk` + `sourceId` đang active (từ Supabase, hoặc fallback mặc định), gọi `patchDuration()`:
    - Tìm HIRC object (Sound/MusicTrack) tham chiếu `sourceId = 985479411`.
    - Tìm MusicSegment cha (qua `refIds`) → lấy field duration segment-level (2 offset).
    - Lấy field duration track-own ngay trong payload track đó (1 offset, gần source
@@ -60,6 +104,32 @@ nhac-sanh-modder/
 ⚠️ **Đường dẫn `Music_Login.bnk` trong zip (`ZIP_BNK_PATH` trong `server/index.js`) là
 giả định cùng thư mục với `.wem`.** Cần tự kiểm tra vị trí thật của file `.bnk` trong
 game trước khi dùng thật — SoundBank thường không nằm chung thư mục với media rời.
+
+## Admin panel — cập nhật ID/bnk mới không cần đụng vào repo
+
+Vì game cập nhật liên tục (đổi `.bnk`, đổi Media ID nhạc sảnh), thay vì sửa code + push
+lại mỗi lần, dùng trang **`/admin`**:
+
+1. Set 3 biến môi trường trên Render (**Environment**): `ADMIN_PASSWORD`, `SUPABASE_URL`,
+   `SUPABASE_SERVICE_KEY`. Thiếu `ADMIN_PASSWORD` → trang admin khoá hoàn toàn (503).
+   Thiếu 2 biến Supabase → trang vẫn xem được trạng thái nhưng không lưu update mới được.
+2. Chạy schema SQL ở trên trong Supabase (1 lần duy nhất).
+3. Upload file `.bnk` mới tải từ game lên [catbox.moe](https://catbox.moe/) → copy link.
+4. Vào `https://<domain-render-cua-ban>/admin`, đăng nhập, dán **link Catbox** và/hoặc
+   nhập **Source ID mới** → **Lưu cấu hình**.
+5. Server **validate trước khi lưu**: tải file từ link Catbox, thử định vị field duration
+   ứng với sourceId trong đó — không tìm thấy thì báo lỗi ngay, không lưu đè cấu hình
+   đang hoạt động (nghĩa là user thật không bao giờ bị ảnh hưởng bởi 1 lần nhập sai).
+6. `/api/build` từ giờ tự dùng sourceId + bnk vừa cập nhật (chậm nhất ~30s do cache TTL,
+   thường là ngay lập tức vì code đã tự "warm" cache lại sau khi lưu).
+
+Có nút **Reset về bản mặc định** nếu muốn quay lại `.bnk`/ID bundle sẵn trong repo.
+
+✅ Vì config nằm trên Supabase (ngoài Render), **sống sót qua mọi lần redeploy** — khác
+hẳn bản trước lưu trên đĩa local của instance. Chỉ cần chú ý: nếu **xoá file trên
+Catbox** mà không cập nhật link mới, lần build tiếp theo (sau khi cache hết hạn) sẽ lỗi
+tải file — Catbox không cam kết lưu file vĩnh viễn nếu ít người tải, nên nếu dùng lâu dài
+nên cân nhắc lưu file `.bnk` ở nơi ổn định hơn (Supabase Storage, S3...).
 
 ## Chạy local
 
