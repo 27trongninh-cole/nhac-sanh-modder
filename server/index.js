@@ -23,6 +23,8 @@ const upload = multer({ dest: os.tmpdir(), limits: { fileSize: 100 * 1024 * 1024
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
+app.get('/admin', (req, res) => res.sendFile(path.join(__dirname, '..', 'public', 'admin.html')));
+
 app.get('/api/health', (req, res) => res.json({ ok: true }));
 
 // ---- admin auth ----
