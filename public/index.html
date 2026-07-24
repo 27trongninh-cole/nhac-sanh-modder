@@ -58,7 +58,7 @@
 </head>
 <body>
 <div class="wrap">
-  <div class="eyebrow">Music_Login · 985479411.wem</div>
+  <div class="eyebrow">Music_Login.bnk modder</div>
   <h1>Mod Nhạc Sảnh</h1>
   <div class="sub">
     Upload <code>.wem</code> / <code>.wav</code> / <code>.mp3</code> — server sẽ chuyển sang PCM (nếu cần),
@@ -94,9 +94,10 @@
   <div class="card">
     <h2><span class="stepnum">2</span>Nội dung gói zip</h2>
     <div class="pathPreview">
-      <span class="root">Nhac_sanh.zip</span>/com.garena.game.kgvn/files/Extra/2022.V3/Sound_DLC/Android/<span class="hl">985479411.wem</span><br>
-      <span class="root">Nhac_sanh.zip</span>/com.garena.game.kgvn/files/Extra/2022.V3/Sound_DLC/Android/<span class="hl">Music_Login.bnk</span> <span style="color:var(--muted)">(đã patch duration)</span>
+      <span class="root">Nhac_sanh.zip</span>/com.garena.game.kgvn/files/Extra/2022.V3/Sound_DLC/Android/<span class="hl">{Replacement ID}.wem</span><br>
+      <span class="root">Nhac_sanh.zip</span>/com.garena.game.kgvn/files/Extra/2022.V3/Sound_DLC/Android/<span class="hl">Music_Login.bnk</span> <span style="color:var(--muted)">(đã patch ID + duration)</span>
     </div>
+    <div class="desc" style="margin-top:8px">Tên file .wem thực tế lấy theo <b>Replacement ID</b> đang cấu hình trên <a href="/admin" style="color:var(--accent)">/admin</a> — file gốc trên máy game không bị ghi đè.</div>
   </div>
 
   <button id="buildBtn" disabled>⬇ Tạo file Nhac_sanh.zip</button>
@@ -208,8 +209,9 @@ buildBtn.addEventListener('click', async ()=>{
         const report = JSON.parse(decodeURIComponent(reportHeader));
         if (report.warning) msg += '\n⚠ ' + report.warning;
         else if (report.durationMs != null) {
+          msg += `\nID: ${report.targetSourceId} → ${report.replacementId} (.wem output đặt tên theo ID này)`;
           msg += `\nDuration mới: ${report.durationMs} ms (nguồn: ${report.durationSource})`;
-          for (const f of report.fields) msg += `\n[${f.kind}] ${f.ownerId}: ${f.oldValueMs} ms → ${f.newValueMs} ms (${f.offsetCount} chỗ)`;
+          for (const f of report.durationFields) msg += `\n[${f.kind}] ${f.ownerId}: ${f.oldValueMs} ms → ${f.newValueMs} ms (${f.offsetCount} chỗ)`;
         }
       }catch(e){}
     }

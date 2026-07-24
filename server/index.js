@@ -8,7 +8,7 @@ const multer = require('multer');
 const archiver = require('archiver');
 
 const { getDurationMs, toPcmWavBuffer } = require('./lib/audioConvert');
-const { patchDuration, locateDurationFields } = require('./lib/bnkPatcher');
+const { patchIdAndDuration, locateDurationFields } = require('./lib/bnkPatcher');
 const supabaseStore = require('./lib/supabaseStore');
 const bnkCache = require('./lib/bnkCache');
 
@@ -46,6 +46,7 @@ app.get('/api/admin/status', requireAdmin, async (req, res) => {
       ok: true,
       supabaseConfigured: supabaseStore.isConfigured(),
       sourceId: active.sourceId,
+      replacementId: active.replacementId,
       bnkUrl: active.config ? active.config.bnkUrl : null,
       isDefault: active.isDefault,
       updatedAt: active.config ? active.config.updatedAt : null,
@@ -57,7 +58,7 @@ app.get('/api/admin/status', requireAdmin, async (req, res) => {
   }
 });
 
-// Body: { sourceId?: number, bnkUrl?: string (Catbox link), updatedBy?: string }
+// Body: { sourceId?: number, replacementId?: number, bnkUrl?: string (Catbox link), updatedBy?: string }
 // At least one of sourceId / bnkUrl must be provided. Validates by actually
 // downloading the (new or currently active) bnk and confirming the target
 // sourceId's duration fields can be located, BEFORE saving to Supabase — so a
@@ -68,14 +69,18 @@ app.post('/api/admin/update', requireAdmin, async (req, res) => {
       return res.status(503).json({ ok: false, error: 'Supabase chưa được cấu hình (thiếu SUPABASE_URL / SUPABASE_SERVICE_KEY trên server)' });
     }
 
-    const { sourceId: sourceIdRaw, bnkUrl: bnkUrlRaw, updatedBy } = req.body || {};
-    if (!sourceIdRaw && !bnkUrlRaw) {
-      return res.status(400).json({ ok: false, error: 'Cần ít nhất 1 trong 2: Source ID mới hoặc link Catbox mới' });
+    const { sourceId: sourceIdRaw, replacementId: replacementIdRaw, bnkUrl: bnkUrlRaw, updatedBy } = req.body || {};
+    if (!sourceIdRaw && !bnkUrlRaw && !replacementIdRaw) {
+      return res.status(400).json({ ok: false, error: 'Cần ít nhất 1 trong 3: Source ID, Replacement ID, hoặc link Catbox mới' });
     }
 
     const sourceId = sourceIdRaw ? parseInt(sourceIdRaw, 10) : null;
     if (sourceIdRaw && !Number.isFinite(sourceId)) {
       return res.status(400).json({ ok: false, error: 'Source ID không hợp lệ' });
+    }
+    const replacementId = replacementIdRaw ? parseInt(replacementIdRaw, 10) : null;
+    if (replacementIdRaw && !Number.isFinite(replacementId)) {
+      return res.status(400).json({ ok: false, error: 'Replacement ID không hợp lệ' });
     }
     const bnkUrl = bnkUrlRaw ? String(bnkUrlRaw).trim() : null;
     if (bnkUrl && !/^https?:\/\//i.test(bnkUrl)) {
@@ -85,6 +90,7 @@ app.post('/api/admin/update', requireAdmin, async (req, res) => {
     const current = await supabaseStore.getConfig();
     const effectiveBnkUrl = bnkUrl || (current && current.bnkUrl);
     const effectiveSourceId = sourceId != null ? sourceId : (current ? current.sourceId : bnkCache.DEFAULT_SOURCE_ID);
+    const effectiveReplacementId = replacementId != null ? replacementId : (current && current.replacementId != null ? current.replacementId : effectiveSourceId);
 
     if (!effectiveBnkUrl) {
       return res.status(400).json({ ok: false, error: 'Chưa có link Catbox nào được lưu trước đó — cần nhập link Catbox ở lần cập nhật đầu tiên' });
@@ -99,7 +105,7 @@ app.post('/api/admin/update', requireAdmin, async (req, res) => {
       });
     }
 
-    const saved = await supabaseStore.setConfig({ sourceId: effectiveSourceId, bnkUrl: effectiveBnkUrl, updatedBy });
+    const saved = await supabaseStore.setConfig({ sourceId: effectiveSourceId, replacementId: effectiveReplacementId, bnkUrl: effectiveBnkUrl, updatedBy });
     bnkCache.invalidate();
     await bnkCache.getActive({ forceRefresh: true }); // warm the cache immediately
 
@@ -134,6 +140,7 @@ app.post('/api/build', upload.single('audio'), async (req, res) => {
   try {
     const active = await bnkCache.getActive();
     const targetSourceId = active.sourceId;
+    const replacementId = active.replacementId;
 
     let wemBytes;
     let durationMs = null;
@@ -157,25 +164,28 @@ app.post('/api/build', upload.single('audio'), async (req, res) => {
       return res.status(400).json({ ok: false, error: `Định dạng .${ext} không được hỗ trợ (chỉ .wem, .wav, .mp3)` });
     }
 
-    // Patch the currently active Music_Login.bnk with the new duration.
+    // Patch the currently active Music_Login.bnk: repoint targetSourceId ->
+    // replacementId (so the original .wem on the game's disk is never
+    // overwritten — it stays as a natural backup) and update duration.
     let bnkBytes = null;
     let patchReport = null;
     if (durationMs != null) {
-      const result = patchDuration(active.bnkBuffer, targetSourceId, durationMs);
+      const result = patchIdAndDuration(active.bnkBuffer, targetSourceId, replacementId, durationMs);
       if (result.ok) {
         bnkBytes = result.buffer;
         patchReport = {
-          durationMs, durationSource, targetSourceId,
-          fields: result.fields.map(f => ({ kind: f.kind, ownerId: f.ownerId, oldValueMs: f.oldValueMs, newValueMs: f.newValueMs, offsetCount: f.offsetCount }))
+          durationMs, durationSource, targetSourceId, replacementId,
+          idFields: result.idFields,
+          durationFields: result.durationFields.map(f => ({ kind: f.kind, ownerId: f.ownerId, oldValueMs: f.oldValueMs, newValueMs: f.newValueMs, offsetCount: f.offsetCount }))
         };
       } else {
-        patchReport = { warning: result.reason, targetSourceId };
+        patchReport = { warning: result.reason, targetSourceId, replacementId };
       }
     } else {
-      patchReport = { warning: 'Không xác định được duration (file .wem không kèm durationMs) — Music_Login.bnk giữ nguyên, không patch.', targetSourceId };
+      patchReport = { warning: 'Không xác định được duration (file .wem không kèm durationMs) — Music_Login.bnk giữ nguyên, không patch.', targetSourceId, replacementId };
     }
 
-    const zipWemName = `${targetSourceId}.wem`;
+    const zipWemName = `${replacementId}.wem`;
     res.setHeader('Content-Type', 'application/zip');
     res.setHeader('Content-Disposition', 'attachment; filename="Nhac_sanh.zip"');
     res.setHeader('X-Patch-Report', encodeURIComponent(JSON.stringify(patchReport)));

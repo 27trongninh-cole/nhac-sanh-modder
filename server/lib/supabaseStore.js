@@ -27,8 +27,8 @@ function isConfigured() {
   return !!client;
 }
 
-// Returns { sourceId, bnkUrl, updatedAt, updatedBy } or null if no row saved yet
-// (fresh Supabase project) or Supabase isn't configured at all.
+// Returns { sourceId, replacementId, bnkUrl, updatedAt, updatedBy } or null if
+// no row saved yet (fresh Supabase project) or Supabase isn't configured at all.
 async function getConfig() {
   if (!client) return null;
   const { data, error } = await client
@@ -40,28 +40,35 @@ async function getConfig() {
   if (!data) return null;
   return {
     sourceId: data.source_id,
+    // fallback to sourceId itself for rows saved before this column existed —
+    // behaves exactly like the old "overwrite in place" mode until the admin
+    // explicitly sets a replacement id.
+    replacementId: data.replacement_id != null ? data.replacement_id : data.source_id,
     bnkUrl: data.bnk_url,
     updatedAt: data.updated_at,
     updatedBy: data.updated_by
   };
 }
 
-async function setConfig({ sourceId, bnkUrl, updatedBy }) {
+async function setConfig({ sourceId, replacementId, bnkUrl, updatedBy }) {
   if (!client) throw new Error('Supabase chưa được cấu hình (thiếu SUPABASE_URL / SUPABASE_SERVICE_KEY trên server)');
+  const payload = {
+    id: 1,
+    source_id: sourceId,
+    bnk_url: bnkUrl,
+    updated_by: updatedBy || null,
+    updated_at: new Date().toISOString()
+  };
+  if (replacementId !== undefined) payload.replacement_id = replacementId;
   const { data, error } = await client
     .from(TABLE)
-    .upsert({
-      id: 1,
-      source_id: sourceId,
-      bnk_url: bnkUrl,
-      updated_by: updatedBy || null,
-      updated_at: new Date().toISOString()
-    })
+    .upsert(payload)
     .select()
     .single();
   if (error) throw new Error('Supabase lỗi khi lưu config: ' + error.message);
   return {
     sourceId: data.source_id,
+    replacementId: data.replacement_id != null ? data.replacement_id : data.source_id,
     bnkUrl: data.bnk_url,
     updatedAt: data.updated_at,
     updatedBy: data.updated_by

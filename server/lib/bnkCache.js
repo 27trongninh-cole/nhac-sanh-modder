@@ -54,6 +54,7 @@ async function getActive(opts = {}) {
     return {
       bnkBuffer: fs.readFileSync(DEFAULT_BNK_PATH),
       sourceId: DEFAULT_SOURCE_ID,
+      replacementId: DEFAULT_SOURCE_ID, // no admin config yet -> old in-place behavior
       isDefault: true,
       config: null
     };
@@ -64,7 +65,13 @@ async function getActive(opts = {}) {
     cachedBnkUrl = cachedConfig.bnkUrl;
   }
 
-  return { bnkBuffer: cachedBnkBuffer, sourceId: cachedConfig.sourceId, isDefault: false, config: cachedConfig };
+  return {
+    bnkBuffer: cachedBnkBuffer,
+    sourceId: cachedConfig.sourceId,
+    replacementId: cachedConfig.replacementId != null ? cachedConfig.replacementId : cachedConfig.sourceId,
+    isDefault: false,
+    config: cachedConfig
+  };
 }
 
 function invalidate() {

@@ -67,8 +67,17 @@
     <label>Link Catbox (.bnk)</label>
     <input type="text" id="bnkUrlInput" placeholder="https://files.catbox.moe/xxxxxx.bnk">
 
-    <label>Source ID mới</label>
+    <label>Source ID (gốc — ID game đang dùng, để tìm trong bnk)</label>
     <input type="number" id="sourceIdInput" placeholder="vd: 520249413">
+
+    <label>Replacement ID (ID thay thế — ghi vào bnk + tên file .wem output)</label>
+    <input type="number" id="replacementIdInput" placeholder="vd: 218149148">
+    <div class="note">
+      Bnk sẽ được patch để trỏ từ Source ID sang Replacement ID này, và file .wem trong
+      zip output cũng đặt tên theo ID này — nhờ vậy file <code>{Source ID}.wem</code> gốc
+      trên máy game không bao giờ bị ghi đè, tự động đóng vai trò bản backup. Để trống thì
+      giữ Replacement ID hiện tại (hoặc = Source ID nếu chưa từng set).
+    </div>
 
     <div class="note">Để trống ô nào thì giữ nguyên giá trị đang active của ô đó. Cần điền ít nhất 1 ô.</div>
 
@@ -80,8 +89,8 @@
   <div class="note">
     ⚠️ Server tải file .bnk từ link Catbox mỗi khi cache hết hạn (~30s) hoặc ngay sau khi bạn
     lưu cấu hình mới — nên nếu bạn XOÁ file trên Catbox mà không cập nhật link mới ở đây,
-    lần build tiếp theo sẽ lỗi. Cấu hình (Source ID + link) lưu trên Supabase nên sẽ
-    <b>không mất khi Render deploy lại</b>.
+    lần build tiếp theo sẽ lỗi. Cấu hình (Source ID + Replacement ID + link) lưu trên
+    Supabase nên sẽ <b>không mất khi Render deploy lại</b>.
   </div>
 </div>
 
@@ -130,7 +139,8 @@ function renderStatus(data) {
       `<div class="msg warn" style="display:block">⚠ Supabase chưa được cấu hình trên server (thiếu SUPABASE_URL / SUPABASE_SERVICE_KEY). Đang dùng file .bnk mặc định bundle sẵn, và không thể lưu cập nhật mới cho tới khi set 2 biến môi trường này.</div>`;
   }
   const rows = [
-    ['Source ID hiện tại', data.sourceId],
+    ['Source ID (gốc)', data.sourceId],
+    ['Replacement ID (output)', data.replacementId],
     ['Link Catbox đang dùng', data.bnkUrl || '— (đang dùng bản mặc định)'],
     ['Nguồn .bnk', data.isDefault ? 'Bundle mặc định' : 'Từ Catbox (qua admin)'],
     ['Kích thước .bnk', (data.bnkSize / 1024 / 1024).toFixed(2) + ' MB'],
@@ -141,6 +151,7 @@ function renderStatus(data) {
     `<div class="statusRow"><span class="k">${k}</span><span class="v">${v}</span></div>`
   ).join('');
   document.getElementById('sourceIdInput').placeholder = 'hiện tại: ' + data.sourceId;
+  document.getElementById('replacementIdInput').placeholder = 'hiện tại: ' + data.replacementId;
   document.getElementById('bnkUrlInput').placeholder = data.bnkUrl || 'https://files.catbox.moe/xxxxxx.bnk';
 }
 
@@ -155,10 +166,11 @@ document.getElementById('saveBtn').addEventListener('click', async () => {
   const saveMsg = document.getElementById('saveMsg');
   saveMsg.className = 'msg'; saveMsg.style.display = 'none';
   const sourceId = document.getElementById('sourceIdInput').value.trim();
+  const replacementId = document.getElementById('replacementIdInput').value.trim();
   const bnkUrl = document.getElementById('bnkUrlInput').value.trim();
-  if (!sourceId && !bnkUrl) {
+  if (!sourceId && !bnkUrl && !replacementId) {
     saveMsg.className = 'msg err';
-    saveMsg.textContent = '⚠ Cần ít nhất 1 trong 2: link Catbox mới hoặc Source ID mới.';
+    saveMsg.textContent = '⚠ Cần ít nhất 1 trong 3: link Catbox, Source ID, hoặc Replacement ID mới.';
     return;
   }
   const btn = document.getElementById('saveBtn');
@@ -167,11 +179,12 @@ document.getElementById('saveBtn').addEventListener('click', async () => {
   try {
     const data = await api('/api/admin/update', {
       method: 'POST',
-      body: JSON.stringify({ sourceId: sourceId || undefined, bnkUrl: bnkUrl || undefined })
+      body: JSON.stringify({ sourceId: sourceId || undefined, replacementId: replacementId || undefined, bnkUrl: bnkUrl || undefined })
     });
     saveMsg.className = 'msg ok';
     saveMsg.textContent = `✅ Đã lưu. Xác nhận: track ${data.validated.trackIds.join(', ')}, ${data.validated.fieldCount} field duration tìm thấy.`;
     document.getElementById('sourceIdInput').value = '';
+    document.getElementById('replacementIdInput').value = '';
     document.getElementById('bnkUrlInput').value = '';
     document.getElementById('statusBox').innerHTML = '';
     renderStatus(await api('/api/admin/status'));
