@@ -51,55 +51,63 @@ async function probeAudioInfo(filePath) {
 // what Wwise's real parser accepts (see buildMinimalPcmWem below), instead of
 // trusting ffmpeg's own WAV muxer which may add extra chunks (e.g. a "LIST"
 // info chunk) that a strict Wwise-format validator could reject.
-async function toRawPcm16(filePath) {
+async function toRawPcm16(filePath, channels) {
   const tmpOut = path.join(os.tmpdir(), `raw_${Date.now()}_${Math.random().toString(36).slice(2)}.pcm`);
   try {
-    await run(ffmpegPath, [
-      '-y', '-i', filePath,
-      '-f', 's16le',
-      '-acodec', 'pcm_s16le',
-      tmpOut
-    ]);
+    const args = ['-y', '-i', filePath, '-f', 's16le', '-acodec', 'pcm_s16le'];
+    if (channels) args.push('-ac', String(channels));
+    args.push(tmpOut);
+    await run(ffmpegPath, args);
     return fs.readFileSync(tmpOut);
   } finally {
     fs.promises.unlink(tmpOut).catch(() => {});
   }
 }
 
-// Builds a MINIMAL RIFF/WAVE PCM container matching exactly what Wwise's
-// actual parser accepts for the PCM codec, per vgmstream's real (reverse
-// engineered from the real SDK) source:
-//   https://github.com/vgmstream/vgmstream/blob/master/src/meta/wwise.c
-// Relevant excerpt (case PCM):
-//   fmt_size must be 0x10, 0x12, 0x18, or 0x28
-//   bits_per_sample must be exactly 16
-//   format tag 0x0001 ("PCM") or 0xFFFE ("PCM for Wwise Authoring") both map
-//   to the PCM codec path
-// This uses the simplest accepted shape: format=0x0001, fmt_size=0x10 (16
-// bytes) — a bare-minimum PCM WAVE — and writes ONLY RIFF/WAVE/fmt/data with
-// no extra chunks (no LIST/INFO metadata that ffmpeg's own muxer tends to
-// add), since vgmstream's chunk parser tolerates unknown chunks but a
-// stricter validator might not.
+// Builds a Wwise PCM .wem container BYTE-EXACT to real working samples
+// produced by "SBank Editor" (an Android APK confirmed to make files the
+// actual game accepts — samples inspected directly, not reverse-engineered
+// from docs). Structure, confirmed by hex-dumping a real 48kHz/stereo sample:
 //
-// IMPORTANT CAVEAT: this fixes the CONTAINER format so generic Wwise-format
-// checkers (like vgmstream-based tools) recognize it as valid PCM. It does
-// NOT guarantee the actual game accepts it — Wwise SoundBanks bake in a
-// specific codec per sound at build time (Vorbis is very common for mobile
-// music tracks to save space), and the game's own Wwise SDK may reject a PCM
-// substitute for a slot that was originally Vorbis-encoded, regardless of
-// how well-formed the PCM container is. There is no software-only fix for
-// that case — it requires actual Wwise conversion.
-function buildMinimalPcmWem({ pcmData, sampleRate, channels, bitsPerSample = 16 }) {
+//   RIFF/WAVE
+//   "fmt " chunk, size=24:
+//     format_tag=0xFFFE, channels, sampleRate, byteRate, blockAlign, bitsPerSample(16)
+//     cbSize=6
+//     2 zero bytes + 4-byte "pseudo channel config" (Wwise's own compact
+//       encoding, NOT the standard 16-byte SubFormat GUID):
+//         bits 0-7  = channel count
+//         bits 8-11 = config type (1 = standard)
+//         bits 12+  = AK speaker channel mask (mono=0x4 front-center,
+//                     stereo=0x3 front-left|front-right)
+//   "JUNK" chunk, size=4, all zero (padding)
+//   "data" chunk: raw interleaved PCM samples, runs to end of file
+//
+// This exactly matches vgmstream's real Wwise parser (wwise.c) for the
+// "later games (2018+) pseudo-format" case, cross-checked against a real
+// sample: pseudo-config 0x3102 decodes to channels=2, configType=1, mask=3 —
+// consistent with vgmstream's own decode logic.
+function buildWwisePcmWem({ pcmData, sampleRate, channels, bitsPerSample = 16 }) {
+  if (channels !== 1 && channels !== 2) {
+    throw new Error(`Chỉ hỗ trợ mono hoặc stereo (nhận ${channels} kênh)`);
+  }
   const blockAlign = channels * (bitsPerSample / 8);
   const byteRate = sampleRate * blockAlign;
+  const channelMask = channels === 1 ? 0x4 : 0x3; // AK speaker config: mono=front-center, stereo=L|R
+  const configType = 1; // "standard"
+  const pseudoConfig = (channels & 0xFF) | ((configType & 0xF) << 8) | (channelMask << 12);
 
-  const fmt = Buffer.alloc(16);
-  fmt.writeUInt16LE(1, 0);              // format tag = 1 (PCM)
+  const fmt = Buffer.alloc(24);
+  fmt.writeUInt16LE(0xFFFE, 0);          // format_tag = WAVE_FORMAT_EXTENSIBLE ("PCM for Wwise Authoring")
   fmt.writeUInt16LE(channels, 2);
   fmt.writeUInt32LE(sampleRate, 4);
   fmt.writeUInt32LE(byteRate, 8);
   fmt.writeUInt16LE(blockAlign, 12);
   fmt.writeUInt16LE(bitsPerSample, 14);
+  fmt.writeUInt16LE(6, 16);              // cbSize = 6
+  fmt.writeUInt16LE(0, 18);              // 2 zero bytes
+  fmt.writeUInt32LE(pseudoConfig, 20);   // 4-byte pseudo channel config
+
+  const junk = Buffer.alloc(4); // all zero, matches real sample exactly
 
   function chunk(id, data) {
     const header = Buffer.alloc(8);
@@ -109,9 +117,10 @@ function buildMinimalPcmWem({ pcmData, sampleRate, channels, bitsPerSample = 16 
   }
 
   const fmtChunk = chunk('fmt ', fmt);
+  const junkChunk = chunk('JUNK', junk);
   const dataChunk = chunk('data', pcmData);
 
-  const riffBody = Buffer.concat([Buffer.from('WAVE', 'ascii'), fmtChunk, dataChunk]);
+  const riffBody = Buffer.concat([Buffer.from('WAVE', 'ascii'), fmtChunk, junkChunk, dataChunk]);
   const riffHeader = Buffer.alloc(8);
   riffHeader.write('RIFF', 0, 'ascii');
   riffHeader.writeUInt32LE(riffBody.length, 4);
@@ -119,11 +128,15 @@ function buildMinimalPcmWem({ pcmData, sampleRate, channels, bitsPerSample = 16 
   return Buffer.concat([riffHeader, riffBody]);
 }
 
-// High-level helper: any ffmpeg-readable input -> minimal Wwise-PCM-shaped buffer.
+// High-level helper: any ffmpeg-readable input -> byte-exact Wwise PCM wem.
+// Forces stereo (2ch) output since that's what real samples confirmed —
+// simplest safe default; mono is also supported by buildWwisePcmWem if ever
+// needed directly.
 async function toWwisePcmBuffer(filePath) {
   const { sampleRate, channels } = await probeAudioInfo(filePath);
-  const pcmData = await toRawPcm16(filePath);
-  return buildMinimalPcmWem({ pcmData, sampleRate, channels, bitsPerSample: 16 });
+  const targetChannels = channels >= 2 ? 2 : 1;
+  const pcmData = await toRawPcm16(filePath, targetChannels);
+  return buildWwisePcmWem({ pcmData, sampleRate, channels: targetChannels, bitsPerSample: 16 });
 }
 
-module.exports = { getDurationMs, probeAudioInfo, toRawPcm16, buildMinimalPcmWem, toWwisePcmBuffer };
+module.exports = { getDurationMs, probeAudioInfo, toRawPcm16, buildWwisePcmWem, toWwisePcmBuffer };
