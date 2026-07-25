@@ -7,7 +7,7 @@ const express = require('express');
 const multer = require('multer');
 const archiver = require('archiver');
 
-const { getDurationMs, toWwisePcmBuffer } = require('./lib/audioConvert');
+const { getDurationMs, toWwiseVorbisBuffer } = require('./lib/audioConvert');
 const { patchIdAndDuration, locateDurationFields } = require('./lib/bnkPatcher');
 const supabaseStore = require('./lib/supabaseStore');
 const bnkCache = require('./lib/bnkCache');
@@ -140,16 +140,11 @@ app.post('/api/admin/reset', requireAdmin, async (req, res) => {
 //                  ffprobe — never packaged as the .wem.
 //   durationMs     (optional) manual duration in ms.
 //
-// CAVEAT on the .wav/.mp3 path: the container is now built to match exactly
-// what Wwise's real PCM parser expects (fmt_size=16, format=1, bits=16 — see
-// audioConvert.js for the reverse-engineered reference). This fixes generic
-// "invalid format" rejections from format-checking tools. It does NOT
-// guarantee the game accepts it: SoundBanks bake in a specific codec per
-// sound at build time, and if the ORIGINAL slot was Vorbis-encoded (common
-// for longer mobile music tracks, to save space), the game's Wwise SDK may
-// still silently reject a PCM substitute regardless of how well-formed the
-// container is. If that happens, a genuine .wem (from real Wwise, or from
-// someone who has it) via the `audio` field directly is the only fix.
+// The .wav/.mp3 path now produces a REAL Vorbis-encoded .wem (not a PCM
+// substitute): ffmpeg encodes to standard Ogg Vorbis, then the raw Vorbis
+// packets are re-framed into a Wwise RIFF container (see wemVorbis.js for
+// the format details and how it was verified via ww2ogg round-trip decode).
+// This matches the codec most mobile music tracks actually use in-game.
 app.post('/api/build', upload.fields([{ name: 'audio', maxCount: 1 }, { name: 'referenceAudio', maxCount: 1 }]), async (req, res) => {
   const file = req.files && req.files.audio && req.files.audio[0];
   const refFile = req.files && req.files.referenceAudio && req.files.referenceAudio[0];
@@ -184,8 +179,8 @@ app.post('/api/build', upload.fields([{ name: 'audio', maxCount: 1 }, { name: 'r
     } else if (ext === 'wav' || ext === 'mp3') {
       durationMs = await getDurationMs(file.path);
       durationSource = 'ffprobe';
-      wemBytes = await toWwisePcmBuffer(file.path);
-      conversionWarning = 'File .wem này được tự tạo từ .wav/.mp3 (PCM container khớp spec Wwise, nhưng KHÔNG đảm bảo game chấp nhận nếu bài gốc dùng codec Vorbis — xem README). Nếu game vẫn im lặng không phát, cần .wem thật convert qua Wwise.';
+      wemBytes = await toWwiseVorbisBuffer(file.path, { quality: 5 });
+      conversionWarning = null; // real Vorbis encode, không còn là PCM giả — xem wemVorbis.js để biết cách hoạt động / đã verify bằng ww2ogg.
     } else {
       cleanup();
       return res.status(400).json({ ok: false, error: `Định dạng .${ext} không được hỗ trợ (chỉ .wem, .wav, .mp3)` });

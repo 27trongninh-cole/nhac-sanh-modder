@@ -6,6 +6,8 @@ const { execFile } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { readOggPackets, parseIdentificationPacket } = require('./oggParse');
+const { buildWemVorbis } = require('./wemVorbis');
 
 function run(cmd, args) {
   return new Promise((resolve, reject) => {
@@ -82,10 +84,10 @@ async function toRawPcm16(filePath, channels) {
 //   "JUNK" chunk, size=4, all zero (padding)
 //   "data" chunk: raw interleaved PCM samples, runs to end of file
 //
-// This exactly matches vgmstream's real Wwise parser (wwise.c) for the
-// "later games (2018+) pseudo-format" case, cross-checked against a real
-// sample: pseudo-config 0x3102 decodes to channels=2, configType=1, mask=3 —
-// consistent with vgmstream's own decode logic.
+// Kept as a fallback / for reference. NOT used by default anymore — see
+// toWwiseVorbisBuffer below, which produces real Vorbis-compressed .wem
+// files (smaller, and matches the codec most mobile music tracks actually
+// use, unlike this PCM path).
 function buildWwisePcmWem({ pcmData, sampleRate, channels, bitsPerSample = 16 }) {
   if (channels !== 1 && channels !== 2) {
     throw new Error(`Chỉ hỗ trợ mono hoặc stereo (nhận ${channels} kênh)`);
@@ -139,4 +141,65 @@ async function toWwisePcmBuffer(filePath) {
   return buildWwisePcmWem({ pcmData, sampleRate, channels: targetChannels, bitsPerSample: 16 });
 }
 
-module.exports = { getDurationMs, probeAudioInfo, toRawPcm16, buildWwisePcmWem, toWwisePcmBuffer };
+// ---------------------------------------------------------------------
+// Vorbis .wem — real codec match for the format most Wwise mobile music
+// tracks actually use (unlike the PCM path above).
+//
+// Pipeline: ffmpeg encodes input -> standard Ogg Vorbis -> we pull the raw
+// Vorbis packets out of the Ogg container -> re-frame them into a Wwise RIFF
+// "header triad present" layout (see wemVorbis.js for the full explanation
+// and how this was reverse-engineered / verified).
+// ---------------------------------------------------------------------
+
+async function encodeToOgg(filePath, oggPath, quality) {
+  await run(ffmpegPath, [
+    '-y', '-i', filePath,
+    '-c:a', 'libvorbis', '-q:a', String(quality),
+    oggPath,
+  ]);
+}
+
+// quality: libvorbis quality, -1..10 (higher = better). Default 5 (~160kbps,
+// roughly matches Wwise's "Vorbis High Quality" preset).
+async function toWwiseVorbisBuffer(filePath, { quality = 5 } = {}) {
+  const tmpOgg = path.join(os.tmpdir(), `wv_${Date.now()}_${Math.random().toString(36).slice(2)}.ogg`);
+  try {
+    await encodeToOgg(filePath, tmpOgg, quality);
+
+    const oggBuf = fs.readFileSync(tmpOgg);
+    const packets = readOggPackets(oggBuf);
+    if (packets.length < 4) {
+      throw new Error('Ogg stream bất thường: ít hơn 4 packet (cần id/comment/setup + audio)');
+    }
+
+    const [idPacket, commentPacket, setupPacket, ...audioPackets] = packets;
+    const info = parseIdentificationPacket(idPacket);
+
+    // Exact sample count of the SOURCE file (not the re-encoded ogg) so the
+    // declared duration in the wem matches the original precisely.
+    const durationMs = await getDurationMs(filePath);
+    const sampleCount = Math.round((durationMs / 1000) * info.sampleRate);
+
+    return buildWemVorbis({
+      channels: info.channels,
+      sampleRate: info.sampleRate,
+      bitrateNominal: info.bitrateNominal,
+      idPacket,
+      commentPacket,
+      setupPacket,
+      audioPackets,
+      sampleCount,
+    });
+  } finally {
+    fs.promises.unlink(tmpOgg).catch(() => {});
+  }
+}
+
+module.exports = {
+  getDurationMs,
+  probeAudioInfo,
+  toRawPcm16,
+  buildWwisePcmWem,
+  toWwisePcmBuffer,
+  toWwiseVorbisBuffer,
+};
