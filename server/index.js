@@ -7,7 +7,7 @@ const express = require('express');
 const multer = require('multer');
 const archiver = require('archiver');
 
-const { getDurationMs, toPcmWavBuffer } = require('./lib/audioConvert');
+const { getDurationMs, toWwisePcmBuffer } = require('./lib/audioConvert');
 const { patchIdAndDuration, locateDurationFields } = require('./lib/bnkPatcher');
 const supabaseStore = require('./lib/supabaseStore');
 const bnkCache = require('./lib/bnkCache');
@@ -130,12 +130,36 @@ app.post('/api/admin/reset', requireAdmin, async (req, res) => {
 });
 
 // ---- main build endpoint ----
-app.post('/api/build', upload.single('audio'), async (req, res) => {
-  const file = req.file;
+// Body fields:
+//   audio          (required) either a REAL .wem (converted via actual Wwise
+//                  software — passed through byte-for-byte, HIGHEST confidence)
+//                  or a .wav/.mp3 (auto-converted to a Wwise-PCM-shaped .wem —
+//                  see caveat below).
+//   referenceAudio (optional, only used when `audio` is .wem) a .wav/.mp3 of
+//                  the SAME track, used ONLY to auto-measure duration via
+//                  ffprobe — never packaged as the .wem.
+//   durationMs     (optional) manual duration in ms.
+//
+// CAVEAT on the .wav/.mp3 path: the container is now built to match exactly
+// what Wwise's real PCM parser expects (fmt_size=16, format=1, bits=16 — see
+// audioConvert.js for the reverse-engineered reference). This fixes generic
+// "invalid format" rejections from format-checking tools. It does NOT
+// guarantee the game accepts it: SoundBanks bake in a specific codec per
+// sound at build time, and if the ORIGINAL slot was Vorbis-encoded (common
+// for longer mobile music tracks, to save space), the game's Wwise SDK may
+// still silently reject a PCM substitute regardless of how well-formed the
+// container is. If that happens, a genuine .wem (from real Wwise, or from
+// someone who has it) via the `audio` field directly is the only fix.
+app.post('/api/build', upload.fields([{ name: 'audio', maxCount: 1 }, { name: 'referenceAudio', maxCount: 1 }]), async (req, res) => {
+  const file = req.files && req.files.audio && req.files.audio[0];
+  const refFile = req.files && req.files.referenceAudio && req.files.referenceAudio[0];
   if (!file) return res.status(400).json({ ok: false, error: 'Thiếu file audio (field "audio")' });
 
   const ext = path.extname(file.originalname).toLowerCase().replace('.', '');
-  const cleanup = () => fs.promises.unlink(file.path).catch(() => {});
+  const cleanup = () => {
+    fs.promises.unlink(file.path).catch(() => {});
+    if (refFile) fs.promises.unlink(refFile.path).catch(() => {});
+  };
 
   try {
     const active = await bnkCache.getActive();
@@ -145,20 +169,23 @@ app.post('/api/build', upload.single('audio'), async (req, res) => {
     let wemBytes;
     let durationMs = null;
     let durationSource = null;
+    let conversionWarning = null;
 
     if (ext === 'wem') {
-      // Pass-through: no re-encoding, and we can't measure duration of a
-      // proprietary Wwise-Vorbis stream without their SDK. Duration patch is
-      // skipped unless the caller supplies one explicitly.
-      wemBytes = fs.readFileSync(file.path);
-      if (req.body.durationMs) {
+      wemBytes = fs.readFileSync(file.path); // pass-through, never re-encoded
+      const refExt = refFile ? path.extname(refFile.originalname).toLowerCase().replace('.', '') : null;
+      if (refFile && (refExt === 'wav' || refExt === 'mp3')) {
+        durationMs = await getDurationMs(refFile.path);
+        durationSource = `ffprobe (từ file tham chiếu .${refExt})`;
+      } else if (req.body.durationMs) {
         durationMs = parseFloat(req.body.durationMs);
         durationSource = 'user-provided';
       }
     } else if (ext === 'wav' || ext === 'mp3') {
       durationMs = await getDurationMs(file.path);
       durationSource = 'ffprobe';
-      wemBytes = await toPcmWavBuffer(file.path);
+      wemBytes = await toWwisePcmBuffer(file.path);
+      conversionWarning = 'File .wem này được tự tạo từ .wav/.mp3 (PCM container khớp spec Wwise, nhưng KHÔNG đảm bảo game chấp nhận nếu bài gốc dùng codec Vorbis — xem README). Nếu game vẫn im lặng không phát, cần .wem thật convert qua Wwise.';
     } else {
       cleanup();
       return res.status(400).json({ ok: false, error: `Định dạng .${ext} không được hỗ trợ (chỉ .wem, .wav, .mp3)` });
@@ -174,15 +201,15 @@ app.post('/api/build', upload.single('audio'), async (req, res) => {
       if (result.ok) {
         bnkBytes = result.buffer;
         patchReport = {
-          durationMs, durationSource, targetSourceId, replacementId,
+          durationMs, durationSource, targetSourceId, replacementId, conversionWarning,
           idFields: result.idFields,
           durationFields: result.durationFields.map(f => ({ kind: f.kind, ownerId: f.ownerId, oldValueMs: f.oldValueMs, newValueMs: f.newValueMs, offsetCount: f.offsetCount }))
         };
       } else {
-        patchReport = { warning: result.reason, targetSourceId, replacementId };
+        patchReport = { warning: result.reason, targetSourceId, replacementId, conversionWarning };
       }
     } else {
-      patchReport = { warning: 'Không xác định được duration (file .wem không kèm durationMs) — Music_Login.bnk giữ nguyên, không patch.', targetSourceId, replacementId };
+      patchReport = { warning: 'Không xác định được duration (file .wem không kèm durationMs) — Music_Login.bnk giữ nguyên, không patch.', targetSourceId, replacementId, conversionWarning };
     }
 
     const zipWemName = `${replacementId}.wem`;
