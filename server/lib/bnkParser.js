@@ -187,6 +187,58 @@ function findTrackOwnDuration(payload, payloadStart, structOffset) {
 
 // Full parse producing the same shape as the browser tool's `report`, but with
 // absolute payload offsets retained (report.hirc[i].payloadStart) for patching.
+// Finds EVERY absolute byte offset within `payload` where a uint32 LE equals
+// `targetId` exactly. Used to relocate a KNOWN specific media/source ID for
+// replacement — since the exact value is already known, this needs no
+// structural heuristics (no false-positive risk) and, unlike the older
+// struct-pattern scan, doesn't miss occurrences that don't happen to follow
+// the "streamType byte immediately before it" pattern (some Wwise objects
+// reference the same source id from more than one internal structure, e.g.
+// once in a Sources list and again in a Playlist/clip entry).
+function findAllIdOccurrences(payload, payloadStart, targetId) {
+  const offsets = [];
+  for (let p = 0; p + 4 <= payload.length; p++) {
+    if (payload.readUInt32LE(p) === targetId) offsets.push(payloadStart + p);
+  }
+  return offsets;
+}
+
+// Finds EVERY plausible ms-duration double (100ms..2h) anywhere in `payload`,
+// excluding the known unrelated fixed constant of exactly 1000.0. Unlike the
+// older "pick only the single largest value" heuristic, this returns ALL
+// candidates — some payloads legitimately carry more than one duration-like
+// field (e.g. a track's own duration AND a shorter fade/trim-point field, or
+// a segment's full duration AND an alternate cue duration), and leaving any
+// of them unpatched means the game keeps reading a stale value from that spot.
+//
+// One false-positive pattern is filtered out: some Wwise fields store a
+// signed +/- pair (e.g. a begin/end trim offset) where only the positive half
+// happens to fall in the "plausible duration" range. If a candidate's exact
+// negative counterpart (-value) is found anywhere else in the same payload,
+// it's excluded — a real duration field never has a same-magnitude negative
+// twin sitting right next to it.
+function findAllDurationCandidates(payload, payloadStart) {
+  const raw = [];
+  for (let p = 0; p + 8 <= payload.length; p++) {
+    let v;
+    try { v = payload.readDoubleLE(p); } catch (e) { continue; }
+    if (!isFinite(v)) continue;
+    if (v < 100 || v > 7200000) continue;
+    if (Math.abs(v - 1000.0) < 0.01) continue; // known unrelated fixed constant
+    raw.push({ value: Math.round(v * 1000) / 1000, offset: payloadStart + p });
+  }
+
+  // collect every double in the payload (any sign/magnitude) once, to check for negative twins
+  const allValues = [];
+  for (let p = 0; p + 8 <= payload.length; p++) {
+    let v;
+    try { v = payload.readDoubleLE(p); } catch (e) { continue; }
+    if (isFinite(v)) allValues.push(v);
+  }
+
+  return raw.filter(c => !allValues.some(v => Math.abs(v + c.value) < 0.01));
+}
+
 function parseBnk(buf) {
   const chunks = parseChunks(buf);
   const result = { fileSize: buf.length, chunks, bkhd: null, didx: [], hirc: [] };
@@ -216,5 +268,6 @@ function parseBnk(buf) {
 module.exports = {
   HIRC_TYPES, CONTAINER_TYPES,
   parseBnk, parseChunks, parseHIRC, parseDIDX, parseBKHD,
-  findDurationOccurrences, scanForSourceStructs, findTrackOwnDuration
+  findDurationOccurrences, scanForSourceStructs, findTrackOwnDuration,
+  findAllIdOccurrences, findAllDurationCandidates
 };

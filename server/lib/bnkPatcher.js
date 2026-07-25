@@ -1,30 +1,35 @@
 'use strict';
 
-const { parseBnk, findDurationOccurrences, scanForSourceStructs, findTrackOwnDuration } = require('./bnkParser');
+const { parseBnk, findAllIdOccurrences, findAllDurationCandidates } = require('./bnkParser');
 
 /**
  * Given a .bnk buffer and the external Media (source) ID used for the track
- * you're modding (e.g. 520249413), find every relevant field:
- *   1. the MusicTrack HIRC object that references that sourceId — and the
- *      exact absolute offset of the sourceId itself (4 bytes, uint32 LE),
- *      so it can be rewritten to point at a DIFFERENT media id instead
- *      (e.g. to avoid overwriting the original .wem on disk).
- *   2. the MusicSegment(s) that reference that MusicTrack (via refIds) — the
- *      PRIMARY duration source (what the analyzer sorts/displays by).
- *   3. the track's OWN nearby duration field (secondary — "nearby field guess").
- * Both duration fields are patched so nothing is left stale, since it isn't
- * fully known which field the game engine actually reads at runtime.
+ * you're modding (e.g. 520249413), exhaustively find every relevant field:
+ *
+ *   1. EVERY literal occurrence of that sourceId anywhere inside the owning
+ *      Sound/MusicTrack HIRC object's payload. A track can reference the same
+ *      source id from more than one internal structure (e.g. once in a
+ *      Sources list, again in a Playlist/clip entry) — all must be rewritten
+ *      to the replacement id, or the game keeps resolving the old one from
+ *      whichever spot got missed.
+ *   2. EVERY plausible duration-like double (100ms..2h, excluding the known
+ *      unrelated fixed 1000.0 constant) inside that same track's payload.
+ *   3. EVERY plausible duration-like double inside the parent MusicSegment's
+ *      payload (found via refIds).
+ *
+ * Earlier versions picked only "the single largest value" per payload as a
+ * heuristic shortcut — but real files can carry MULTIPLE legitimate duration
+ * fields side by side (e.g. full length + a shorter fade/trim point), and
+ * picking just one left the other stale. This version patches all of them.
  */
 function locateFields(buf, targetSourceId) {
-  const { result, didxIds } = parseBnk(buf);
+  const { result } = parseBnk(buf);
 
-  const trackMatches = []; // { hirc, structOffset }
+  const trackMatches = []; // { hirc, idOffsets }
   for (const h of result.hirc) {
     if (h.type !== 2 && h.type !== 11) continue; // Sound / MusicTrack
-    const found = scanForSourceStructs(h.payload, didxIds);
-    for (const f of found) {
-      if (f.sourceId === targetSourceId) trackMatches.push({ hirc: h, structOffset: f.structOffset });
-    }
+    const idOffsets = findAllIdOccurrences(h.payload, h.payloadStart, targetSourceId);
+    if (idOffsets.length > 0) trackMatches.push({ hirc: h, idOffsets });
   }
 
   if (trackMatches.length === 0) {
@@ -37,28 +42,22 @@ function locateFields(buf, targetSourceId) {
   const durationFields = []; // { kind, ownerId, currentValueMs, offsets }
 
   for (const seg of segments) {
-    const occ = findDurationOccurrences(seg.payload, seg.payloadStart, 0, seg.payload.length - 8);
-    if (occ) durationFields.push({ kind: 'segment', ownerId: seg.id, currentValueMs: occ.value, offsets: occ.offsets });
+    for (const c of findAllDurationCandidates(seg.payload, seg.payloadStart)) {
+      durationFields.push({ kind: 'segment', ownerId: seg.id, currentValueMs: c.value, offsets: [c.offset] });
+    }
   }
 
   for (const m of trackMatches) {
-    const occ = findTrackOwnDuration(m.hirc.payload, m.hirc.payloadStart, m.structOffset);
-    if (occ) durationFields.push({ kind: 'track', ownerId: m.hirc.id, currentValueMs: occ.value, offsets: occ.offsets });
+    for (const c of findAllDurationCandidates(m.hirc.payload, m.hirc.payloadStart)) {
+      durationFields.push({ kind: 'track', ownerId: m.hirc.id, currentValueMs: c.value, offsets: [c.offset] });
+    }
   }
 
-  if (durationFields.length === 0) {
-    return {
-      ok: false,
-      reason: `Tìm thấy track (${[...trackIds].join(', ')}) nhưng không dò được field duration hợp lệ nào (segment hay track)`
-    };
+  // idFields: absolute offsets of the sourceId itself, across all track matches
+  const idFields = [];
+  for (const m of trackMatches) {
+    for (const off of m.idOffsets) idFields.push({ hircId: m.hirc.id, offset: off });
   }
-
-  // sourceId field itself: struct layout is [.., streamType(u8) @+4, sourceId(u32LE) @+5, ..]
-  // (see scanForSourceStructs in bnkParser.js) — offset relative to hirc.payload
-  const idFields = trackMatches.map(m => ({
-    hircId: m.hirc.id,
-    offset: m.hirc.payloadStart + m.structOffset + 5
-  }));
 
   return { ok: true, trackIds: [...trackIds], durationFields, idFields };
 }
@@ -73,13 +72,12 @@ function locateDurationFields(buf, targetSourceId) {
 
 /**
  * Returns a NEW Buffer (copy) with:
- *   - every sourceId occurrence for `targetSourceId` rewritten to `replacementSourceId`
- *     (so the .bnk points at a NEW/unused media id instead of the original)
- *   - every located duration occurrence (segment-level AND track-own)
+ *   - EVERY sourceId occurrence for `targetSourceId` rewritten to `replacementSourceId`
+ *   - EVERY located duration occurrence (segment-level AND track-level)
  *     overwritten with `newDurationMs` (float64 LE)
  * File size is preserved exactly — only fixed-width fields are rewritten in place.
- * If replacementSourceId === targetSourceId, this behaves exactly like the
- * old in-place "just patch duration" mode.
+ * If replacementSourceId === targetSourceId, the id "patch" is a no-op write
+ * of the same value (harmless), behaving like the old in-place mode.
  */
 function patchIdAndDuration(buf, targetSourceId, replacementSourceId, newDurationMs) {
   const located = locateFields(buf, targetSourceId);
