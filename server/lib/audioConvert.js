@@ -10,6 +10,15 @@ const { readOggPackets, parseIdentificationPacket } = require('./oggParse');
 const { packSetupPacket } = require('./setupPack');
 const { packAudioPacket } = require('./packAudioPacket');
 const { buildWemV2 } = require('./wemWriteV2');
+const { CodebookLibrary } = require('./codebookLibrary');
+
+let _codebookLib = null;
+function getCodebookLib() {
+  if (!_codebookLib) {
+    _codebookLib = new CodebookLibrary(path.join(__dirname, 'packed_codebooks.bin'));
+  }
+  return _codebookLib;
+}
 
 function run(cmd, args) {
   return new Promise((resolve, reject) => {
@@ -178,7 +187,7 @@ async function toWwiseVorbisBufferV2(filePath, { quality = 5 } = {}) {
     // wire format never stores it.
     const standardSetupBody = setupPacketFull.subarray(7);
     const { bytes: wwiseSetupPacket, modeBits, modeBlockflag } =
-      packSetupPacket(standardSetupBody, info.channels);
+      packSetupPacket(standardSetupBody, info.channels, getCodebookLib());
 
     const wwiseAudioPackets = audioPackets.map(pkt => packAudioPacket(pkt, modeBits, modeBlockflag));
 

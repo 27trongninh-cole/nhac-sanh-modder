@@ -1,7 +1,54 @@
 'use strict';
 
 const { BitReader, BitWriter, ilog } = require('./bitio');
-const { packCodebook } = require('./codebookPack');
+const { packCodebook, bookMaptype1Quantvals } = require('./codebookPack');
+
+// Reads one standard-format codebook (consuming those bits from `br`) and
+// returns its structural signature {dims, entries, ordered, lengths} --
+// the same shape used by CodebookLibrary's index -- WITHOUT writing
+// anything. Caller uses this to look up the codebook's external ID.
+function readStandardCodebookSignature(br) {
+  const sync = br.read(24);
+  if (sync !== 0x564342) throw new Error(`expected codebook sync 0x564342, got ${sync.toString(16)}`);
+  const dims = br.read(16);
+  const entries = br.read(24);
+
+  const ordered = br.read(1);
+  const lengths = [];
+  if (ordered) {
+    const initialLength = br.read(5);
+    let currentEntry = 0;
+    let cur = initialLength;
+    while (currentEntry < entries) {
+      const nbits = ilog(entries - currentEntry);
+      const number = br.read(nbits);
+      for (let i = 0; i < number; i++) lengths.push(cur);
+      currentEntry += number;
+      cur += 1;
+    }
+    if (currentEntry > entries) throw new Error('codebook ordered run-length overflow');
+  } else {
+    const sparse = br.read(1);
+    for (let i = 0; i < entries; i++) {
+      let present = 1;
+      if (sparse) present = br.read(1);
+      lengths.push(present ? br.read(5) : null);
+    }
+  }
+
+  const lookupType = br.read(4);
+  if (lookupType > 1) throw new Error(`unsupported codebook lookup_type ${lookupType}`);
+  if (lookupType === 1) {
+    br.read(32); // min
+    br.read(32); // max
+    const valueLength = br.read(4);
+    br.read(1); // sequence_flag
+    const quantvals = bookMaptype1Quantvals(entries, dims);
+    for (let i = 0; i < quantvals; i++) br.read(valueLength + 1);
+  }
+
+  return { dims, entries, ordered, lengths };
+}
 
 // Inverse of the manual reparse branch in wwriff.cpp's setup-packet
 // generation. See wav2wem's setup_pack.py for the fully-commented
@@ -9,8 +56,12 @@ const { packCodebook } = require('./codebookPack');
 //
 // standardSetupPacket: raw 3rd Ogg packet content WITHOUT its leading
 //   7-byte Vorbis header (type=5 + 'vorbis') -- caller strips that.
+// codebookLib: a CodebookLibrary instance (see codebookLibrary.js), used
+//   to resolve each codebook to its 10-bit external ID. This matches the
+//   REAL format confirmed against actual game .wem files -- inline-
+//   embedded codebooks caused a native crash in-game.
 // Returns: { bytes, modeBits, modeBlockflag }
-function packSetupPacket(standardSetupPacket, channels) {
+function packSetupPacket(standardSetupPacket, channels, codebookLib) {
   const br = new BitReader(standardSetupPacket);
   const bw = new BitWriter();
 
@@ -18,7 +69,17 @@ function packSetupPacket(standardSetupPacket, channels) {
   const codebookCount = codebookCountLess1 + 1;
   bw.write(codebookCountLess1, 8);
 
-  for (let i = 0; i < codebookCount; i++) packCodebook(br, bw);
+  for (let i = 0; i < codebookCount; i++) {
+    const { dims, entries, ordered, lengths } = readStandardCodebookSignature(br);
+    const codebookId = codebookLib.lookupId(dims, entries, ordered, lengths);
+    if (codebookId === null) {
+      throw new Error(
+        `codebook (dims=${dims}, entries=${entries}, ordered=${ordered}) has no ` +
+        'match in the external codebook library -- cannot encode this file'
+      );
+    }
+    bw.write(codebookId, 10);
+  }
 
   // time-domain placeholder: consume, write nothing (Wwise drops it)
   const timeCountLess1 = br.read(6);
