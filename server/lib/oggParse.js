@@ -4,13 +4,19 @@
 // standard .ogg (Vorbis) buffer. No CRC validation / multi-stream handling
 // needed since ffmpeg always emits one clean Vorbis stream for our use case.
 //
-// Returns: array of Buffers. packet[0] = identification, packet[1] = comment,
-// packet[2] = setup, packet[3..] = audio packets.
+// Returns: { packets, lastGranule }. packets[0] = identification,
+// packets[1] = comment, packets[2] = setup, packets[3..] = audio packets.
+// lastGranule is the exact granule position of the final Ogg page -- i.e.
+// the EXACT number of samples this stream decodes to. Use this instead of
+// estimating sample count from source-file duration: any mismatch between
+// a declared sample_count and what actually decodes can overflow a
+// fixed-size output buffer in the game's decoder.
 function readOggPackets(buf) {
   const packets = [];
   let current = [];
   let offset = 0;
   const n = buf.length;
+  let lastGranule = null;
 
   while (offset < n) {
     if (buf.toString('ascii', offset, offset + 4) !== 'OggS') {
@@ -20,6 +26,8 @@ function readOggPackets(buf) {
     // Ogg page header: 27 bytes fixed + N-byte segment table
     // capture(4) version(1) header_type(1) granule_pos(8) serial(4)
     // page_seq(4) checksum(4) page_segments(1)
+    lastGranule = buf.readBigInt64LE(offset + 6);
+
     const pageSegments = buf.readUInt8(offset + 26);
     const segTable = buf.subarray(offset + 27, offset + 27 + pageSegments);
     let pos = offset + 27 + pageSegments;
@@ -38,7 +46,7 @@ function readOggPackets(buf) {
 
   if (current.length) packets.push(Buffer.concat(current)); // trailing partial (shouldn't happen)
 
-  return packets;
+  return { packets, lastGranule: lastGranule === null ? null : Number(lastGranule) };
 }
 
 // Parses a standard Vorbis identification packet (packet 0).
