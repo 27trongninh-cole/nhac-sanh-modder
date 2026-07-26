@@ -1,40 +1,64 @@
-# Tích hợp Vorbis .wem encoder vào nhac-sanh-modder
+# Tích hợp Vorbis .wem encoder (v2 — khớp format thật) vào nhac-sanh-modder
+
+## Bối cảnh quan trọng
+Bản đầu tiên mình gửi (dùng biến thể "header triad") **SAI** — không phải
+format game AOV thực tế dùng. Sau khi bạn gửi 2 file `.wem` thật tạo từ
+SBank Editor để đối chiếu (`142682346.wem`, `251044735.wem`), mình hex-dump
+và phát hiện format thật khác hẳn: `fmt` chunk 66 byte tự chứa luôn field
+kiểu `vorb` (không tách chunk riêng), packet header chỉ 2 byte (không có
+granule), và quan trọng nhất — **codebook bị nén lại + audio packet bị cắt
+bit window-flag (`mod_packets`)**. Bản `v2` này viết lại đúng theo phát
+hiện đó, đã test bit-level khớp 100% với 2 file thật.
 
 ## File trong gói này
-- `oggParse.js`   → **mới**, copy vào `server/lib/oggParse.js`
-- `wemVorbis.js`  → **mới**, copy vào `server/lib/wemVorbis.js`
-- `audioConvert.js` → **thay thế** `server/lib/audioConvert.js` (đã giữ
-  nguyên toàn bộ hàm cũ, chỉ thêm `toWwiseVorbisBuffer` + import 2 file mới)
-- `index.js` → **thay thế** `server/index.js` (chỉ đổi 2 chỗ: import
-  `toWwiseVorbisBuffer` thay vì `toWwisePcmBuffer`, và đổi 3 dòng trong
-  nhánh `.wav`/`.mp3` của `/api/build`)
+**Mới, copy vào `server/lib/`:**
+- `oggParse.js` — bóc gói tin Vorbis thô từ Ogg do ffmpeg tạo
+- `bitio.js` — đọc/ghi bit kiểu LSB-first (đúng convention Vorbis)
+- `codebookPack.js` — nén codebook chuẩn Vorbis → định dạng Wwise (đảo
+  ngược logic `codebook_library::rebuild` của `ww2ogg`)
+- `setupPack.js` — nén toàn bộ setup packet (floor/residue/mapping/mode)
+  theo đúng bit-width rút gọn của Wwise
+- `packAudioPacket.js` — cắt bit packet-type + window-flag khỏi từng gói
+  audio (`mod_packets`)
+- `wemWriteV2.js` — đóng gói tất cả vào container RIFF/WAVE đúng layout
+  thật (fmt 66 byte tự chứa vorb, packet header 2 byte)
+- `wemVorbis.js` — **giữ lại nhưng KHÔNG dùng nữa** (biến thể "header
+  triad" cũ, sai format thật — chỉ để tham khảo/lịch sử)
 
-Không đụng gì tới `bnkParser.js`, `bnkPatcher.js`, `supabaseStore.js`,
-`bnkCache.js`, `public/*.html`, `package.json` — giữ nguyên 100%.
+**Thay thế:**
+- `audioConvert.js` — thêm `toWwiseVorbisBufferV2()` (dùng chính thức),
+  giữ nguyên `toWwiseVorbisBuffer()` cũ (không dùng) + toàn bộ hàm PCM cũ
+- `index.js` — đổi 1 import + 2 dòng trong route `/api/build`, dùng
+  `toWwiseVorbisBufferV2` thay vì bản v1
 
-## Cách hoạt động (tóm tắt)
-1. `ffmpeg-static` (đã có sẵn trong `package.json`, không cần cài thêm gì
-   trên Render) encode `.wav`/`.mp3` → Ogg Vorbis chuẩn.
-2. `oggParse.js` bóc tách các gói tin thô (raw packet) Vorbis từ file Ogg đó.
-3. `wemVorbis.js` đóng gói lại các gói tin đó vào container RIFF/WAVE theo
-   đúng layout Wwise dùng cho biến thể "header triad present" — biến thể
-   **duy nhất** không cần bẻ lại bit-level codebook, nên không cần binary
-   độc quyền của Audiokinetic.
+Không đụng `bnkParser.js`, `bnkPatcher.js`, `supabaseStore.js`,
+`bnkCache.js`, `public/*.html`, `package.json`.
 
-Đã build `ww2ogg` (mã nguồn mở, hcs64/ww2ogg) để decode thử ngược file do
-chính pipeline Node này tạo ra (dùng đúng `ffmpeg-static`/`ffprobe-static`
-sẽ chạy trên Render) — kết quả: decode thành công, audio khớp gốc.
+## Đã kiểm chứng thế nào
+1. Encode thử 2 file WAV test (1 sine đơn giản, 1 pha trộn nhiễu + tremolo
+   để ép chuyển đổi short/long block liên tục — bài test khó hơn cho logic
+   `mod_packets`) bằng chính pipeline Node này (dùng đúng `ffmpeg-static`
+   sẽ chạy trên Render).
+2. Build `ww2ogg` (hcs64/ww2ogg, mã nguồn mở) với flag `--inline-codebooks`,
+   decode ngược file `.wem` vừa tạo — **thành công cả 2 lần**, ra đúng
+   audio Vorbis phát được, duration khớp gốc, âm lượng đúng mức tín hiệu
+   (không phải nhiễu/rác).
+3. Đối chiếu byte-level cấu trúc `fmt`/`vorb`/packet-header của file do
+   tool này tạo với 2 file `.wem` thật bạn gửi — khớp cấu trúc.
 
 ## Việc BẠN cần tự làm trước khi tin tưởng 100%
-- **Test bằng file thật trong game** — đây là bước duy nhất mình không thể
-  tự làm (không có game). `ww2ogg` xác nhận đúng *bitstream Vorbis*, nhưng
-  chỉ Wwise SDK thật trong game mới xác nhận được engine chấp nhận file.
-- Nếu game vẫn im lặng không phát: khả năng cao là track gốc dùng loop
-  points phức tạp hơn (chunk `smpl`) mà bản này chưa implement — báo mình
-  biết để bổ sung.
+**Test bằng game thật** — đây vẫn là bước duy nhất mình không tự làm được.
+`ww2ogg` xác nhận đúng bitstream Vorbis + đúng cấu trúc container y hệt
+file thật, độ tin cậy giờ cao hơn nhiều so với bản v1, nhưng chỉ Wwise SDK
+thật trong game mới xác nhận 100% được.
 
-## Không đổi kiến trúc "wem mới đi kèm bnk"
-`toWwiseVorbisBuffer()` chỉ trả về `Buffer` của file `.wem` — index.js vẫn
-đóng gói nó vào zip dưới tên `{replacementId}.wem`, y hệt luồng cũ, **không
-đụng tới byte nào bên trong `Music_Login.bnk`**. `bnkPatcher.js` vẫn chỉ lo
-phần patch ID/duration như trước — đúng như bạn muốn (không sửa wem trong bnk).
+## Giới hạn đã biết
+- Nếu source Vorbis (từ `libvorbis` chuẩn) dùng `lookup_type` 2 hoặc 3 cho
+  codebook, hoặc floor không phải `floor1`, tool sẽ báo lỗi rõ ràng thay vì
+  tạo ra file sai — nhưng trường hợp này gần như không xảy ra với
+  `ffmpeg`/`libvorbis` mặc định (luôn dùng floor1 + lookup_type 0/1).
+- Chưa test loop points (chunk `smpl`) — nếu nhạc cần loop, cần bổ sung.
+- `mod_signal` cố định = `0xD9` (theo gợi ý trong comment của `ww2ogg`
+  source, không phải giá trị suy ra từ 2 file mẫu) — nếu game từ chối file,
+  đây là 1 trong những điểm đầu tiên nên thử đổi thử các giá trị khác.
+

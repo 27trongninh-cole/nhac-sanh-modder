@@ -7,7 +7,7 @@ const express = require('express');
 const multer = require('multer');
 const archiver = require('archiver');
 
-const { getDurationMs, toWwiseVorbisBuffer } = require('./lib/audioConvert');
+const { getDurationMs, toWwiseVorbisBufferV2 } = require('./lib/audioConvert');
 const { patchIdAndDuration, locateDurationFields } = require('./lib/bnkPatcher');
 const supabaseStore = require('./lib/supabaseStore');
 const bnkCache = require('./lib/bnkCache');
@@ -179,8 +179,8 @@ app.post('/api/build', upload.fields([{ name: 'audio', maxCount: 1 }, { name: 'r
     } else if (ext === 'wav' || ext === 'mp3') {
       durationMs = await getDurationMs(file.path);
       durationSource = 'ffprobe';
-      wemBytes = await toWwiseVorbisBuffer(file.path, { quality: 5 });
-      conversionWarning = null; // real Vorbis encode, không còn là PCM giả — xem wemVorbis.js để biết cách hoạt động / đã verify bằng ww2ogg.
+      wemBytes = await toWwiseVorbisBufferV2(file.path, { quality: 5 });
+      conversionWarning = null; // real Vorbis encode (inline codebooks + mod_packets, matches confirmed real .wem format) — xem wemWriteV2.js.
     } else {
       cleanup();
       return res.status(400).json({ ok: false, error: `Định dạng .${ext} không được hỗ trợ (chỉ .wem, .wav, .mp3)` });

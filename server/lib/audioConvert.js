@@ -8,6 +8,9 @@ const os = require('os');
 const path = require('path');
 const { readOggPackets, parseIdentificationPacket } = require('./oggParse');
 const { buildWemVorbis } = require('./wemVorbis');
+const { packSetupPacket } = require('./setupPack');
+const { packAudioPacket } = require('./packAudioPacket');
+const { buildWemV2 } = require('./wemWriteV2');
 
 function run(cmd, args) {
   return new Promise((resolve, reject) => {
@@ -195,6 +198,55 @@ async function toWwiseVorbisBuffer(filePath, { quality = 5 } = {}) {
   }
 }
 
+// ---------------------------------------------------------------------
+// Vorbis .wem v2 -- matches the REAL format confirmed by hex-inspecting
+// actual AOV .wem assets (142682346.wem / 251044735.wem): inline packed
+// codebooks + reduced setup packet + mod_packets audio framing. This is
+// the one that should actually be used; toWwiseVorbisBuffer above (the
+// "header triad" variant) turned out to be a rare/legacy format not used
+// by this game -- kept only for reference/fallback.
+// ---------------------------------------------------------------------
+
+async function toWwiseVorbisBufferV2(filePath, { quality = 5 } = {}) {
+  const tmpOgg = path.join(os.tmpdir(), `wv2_${Date.now()}_${Math.random().toString(36).slice(2)}.ogg`);
+  try {
+    await encodeToOgg(filePath, tmpOgg, quality);
+
+    const oggBuf = fs.readFileSync(tmpOgg);
+    const packets = readOggPackets(oggBuf);
+    if (packets.length < 4) {
+      throw new Error('Ogg stream bất thường: ít hơn 4 packet (cần id/comment/setup + audio)');
+    }
+
+    const [idPacket, , setupPacketFull, ...audioPackets] = packets;
+    const info = parseIdentificationPacket(idPacket);
+
+    // strip the 7-byte Vorbis packet header (type=5 + 'vorbis') -- Wwise's
+    // wire format never stores it.
+    const standardSetupBody = setupPacketFull.subarray(7);
+    const { bytes: wwiseSetupPacket, modeBits, modeBlockflag } =
+      packSetupPacket(standardSetupBody, info.channels);
+
+    const wwiseAudioPackets = audioPackets.map(pkt => packAudioPacket(pkt, modeBits, modeBlockflag));
+
+    const durationMs = await getDurationMs(filePath);
+    const sampleCount = Math.round((durationMs / 1000) * info.sampleRate);
+
+    return buildWemV2({
+      channels: info.channels,
+      sampleRate: info.sampleRate,
+      bitrateNominal: info.bitrateNominal,
+      blocksize0Pow: info.blocksize0Pow,
+      blocksize1Pow: info.blocksize1Pow,
+      wwiseSetupPacket,
+      wwiseAudioPackets,
+      sampleCount,
+    });
+  } finally {
+    fs.promises.unlink(tmpOgg).catch(() => {});
+  }
+}
+
 module.exports = {
   getDurationMs,
   probeAudioInfo,
@@ -202,4 +254,5 @@ module.exports = {
   buildWwisePcmWem,
   toWwisePcmBuffer,
   toWwiseVorbisBuffer,
+  toWwiseVorbisBufferV2,
 };
