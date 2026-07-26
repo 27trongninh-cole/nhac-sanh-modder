@@ -1,14 +1,13 @@
 'use strict';
 
 // Builds a Wwise .wem matching the REAL variant confirmed from actual
-// game assets (142682346.wem / 251044735.wem, hex-inspected directly):
-// fmt chunk size 0x42 with the vorb-equivalent fields embedded inside it
-// (no separate vorb chunk), 2-byte "no granule" packet headers,
-// mod_packets audio framing, inline packed codebooks + reduced setup
-// packet. This supersedes the earlier "header triad" wemVorbis.js writer,
-// which turned out to be a rare/legacy variant NOT used by AOV.
-
-const MOD_SIGNAL_SET = 0xD9; // any value other than {0x4A,0x4B,0x69,0x70} signals mod_packets=true
+// game assets (142682346.wem / 251044735.wem, plus sbank_tạo.wem,
+// hex-inspected directly): fmt chunk size 0x42 with the vorb-equivalent
+// fields embedded inside it (no separate vorb chunk), 2-byte "no granule"
+// packet headers, mod_packets audio framing, inline packed codebooks +
+// reduced setup packet. This supersedes the earlier "header triad"
+// wemVorbis.js writer, which turned out to be a rare/legacy variant NOT
+// used by AOV.
 
 function buildWemV2({
   channels,
@@ -45,7 +44,13 @@ function buildWemV2({
   // ---- vorb-equivalent (42 bytes), to be embedded inside fmt ----
   const vorb = Buffer.alloc(0x2A);
   vorb.writeUInt32LE(sampleCount >>> 0, 0x00);
-  vorb.writeUInt32LE(MOD_SIGNAL_SET, 0x04);
+  // mod_signal: empirically, every real .wem sample inspected has this
+  // field exactly equal to firstAudioPacketOffset (NOT a fixed "magic"
+  // constant -- ww2ogg's decoder only checks it against 4 known legacy
+  // values as a heuristic for whether to enable mod_packets, but the real
+  // encoder appears to just duplicate the offset here, and the actual
+  // game engine may validate it against that offset).
+  vorb.writeUInt32LE(firstAudioPacketOffset >>> 0, 0x04);
   vorb.writeUInt32LE(setupPacketOffset >>> 0, 0x10);
   vorb.writeUInt32LE(firstAudioPacketOffset >>> 0, 0x14);
   vorb.writeUInt32LE(0, 0x24); // uid -- not validated for playback
