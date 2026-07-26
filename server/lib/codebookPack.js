@@ -101,4 +101,4 @@ function bookMaptype1Quantvals(entries, dimensions) {
   }
 }
 
-module.exports = { packCodebook };
+module.exports = { packCodebook, bookMaptype1Quantvals };
