@@ -51,8 +51,19 @@ function buildWemV2({
   // encoder appears to just duplicate the offset here, and the actual
   // game engine may validate it against that offset).
   vorb.writeUInt32LE(firstAudioPacketOffset >>> 0, 0x04);
+  // 0x08: confirmed by inspecting 3 real .wem samples -- always exactly
+  // equal to the data chunk's total size (a redundant copy of it).
+  vorb.writeUInt32LE(dataLen >>> 0, 0x08);
   vorb.writeUInt32LE(setupPacketOffset >>> 0, 0x10);
   vorb.writeUInt32LE(firstAudioPacketOffset >>> 0, 0x14);
+  // 0x18: unresolved -- varies per file in real samples (392/673/666)
+  // without a formula we could confirm; left at 0 for now.
+  // 0x1c / 0x20: confirmed CONSTANT across all 3 real samples regardless
+  // of content/duration (16080 / 16560, always exactly 480 apart) --
+  // very likely a fixed Wwise-project-level prefetch/streaming setting,
+  // not computed per-file.
+  vorb.writeUInt32LE(16080, 0x1c);
+  vorb.writeUInt32LE(16560, 0x20);
   vorb.writeUInt32LE(0, 0x24); // uid -- not validated for playback
   vorb.writeUInt8(blocksize0Pow, 0x28);
   vorb.writeUInt8(blocksize1Pow, 0x29);
