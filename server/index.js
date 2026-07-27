@@ -6,6 +6,7 @@ const os = require('os');
 const express = require('express');
 const multer = require('multer');
 const archiver = require('archiver');
+const batchRoute = require('./batchRoute');
 
 const { getDurationMs, toWwiseVorbisBufferV2 } = require('./lib/audioConvert');
 const { patchIdAndDuration, locateDurationFields } = require('./lib/bnkPatcher');
@@ -226,6 +227,8 @@ app.post('/api/build', upload.fields([{ name: 'audio', maxCount: 1 }, { name: 'r
     cleanup();
   }
 });
+
+app.use(batchRoute);
 
 app.listen(PORT, () => {
   console.log(`Nhạc sảnh modder server đang chạy tại http://localhost:${PORT}`);
