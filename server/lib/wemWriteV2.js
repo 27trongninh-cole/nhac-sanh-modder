@@ -56,8 +56,15 @@ function buildWemV2({
   vorb.writeUInt32LE(dataLen >>> 0, 0x08);
   vorb.writeUInt32LE(setupPacketOffset >>> 0, 0x10);
   vorb.writeUInt32LE(firstAudioPacketOffset >>> 0, 0x14);
-  // 0x18: unresolved -- varies per file in real samples (392/673/666)
-  // without a formula we could confirm; left at 0 for now.
+  // 0x18: empirically confirmed (by testing 5 hand-patched variants of a
+  // known-working real .wem in-game) that this does NOT need to match
+  // any exact/computed value -- values too small (1, or half the real
+  // value) fail to play, while values at or above the real magnitude
+  // (real value, +1, x2, or even a wildly oversized 999999) all play
+  // fine. So it's some kind of buffer/prefetch size hint with a minimum
+  // threshold, not a checksum. We just use a constant comfortably above
+  // every real per-file value observed (402-478) with a lot of margin.
+  vorb.writeUInt32LE(16080, 0x18);
   // 0x1c / 0x20: confirmed CONSTANT across all 3 real samples regardless
   // of content/duration (16080 / 16560, always exactly 480 apart) --
   // very likely a fixed Wwise-project-level prefetch/streaming setting,
