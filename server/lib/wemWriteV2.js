@@ -82,7 +82,16 @@ function buildWemV2({
   fmt.writeUInt32LE(setupPacketLength >>> 0, 0x1C); // setup packet's own byte length
   fmt.writeUInt32LE(dataLen >>> 0, 0x20);    // total data-chunk byte length
   fmt.writeUInt16LE(0, 0x24);
-  fmt.writeUInt16LE(0, 0x26);                // packet-count/loop-related counter, 0 for non-looping single file
+  // 0x26 (abs 0x3A): real a6.a.o() writes `dVar.f161j` here, NOT a
+  // constant 0 -- confirmed by comparing against a real in-game .wem
+  // (which had a nonzero value, 832, at this exact byte offset). Almost
+  // certainly a packet-count used by the engine to size an internal
+  // seek/index table; leaving it 0 while writing far more real packets
+  // is a very plausible cause of a native heap overflow / crash deep in
+  // libAkSoundEngine.so (matches the crash signature seen in-game while
+  // vgmstream/SBank Editor, which don't rely on this field, played the
+  // exact same file fine).
+  fmt.writeUInt16LE(wwiseAudioPackets.length & 0xFFFF, 0x26);
   fmt.writeUInt32LE(0, 0x28);
   fmt.writeUInt32LE(setupPacketLength >>> 0, 0x2C); // redundant copy, matches real layout
   fmt.writeUInt16LE(maxPacketSize, 0x30);
