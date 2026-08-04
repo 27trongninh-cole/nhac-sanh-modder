@@ -18,79 +18,80 @@ function buildWemV2({
   wwiseSetupPacket,
   wwiseAudioPackets,
   sampleCount,
+  loopStart = -1,
+  loopEnd = -1,
 }) {
   const avgBytesPerSecond = bitrateNominal > 0 ? Math.floor(bitrateNominal / 8) : 0;
 
   // ---- data chunk: 2-byte (size-only) headers, no granule ----
   const dataParts = [];
   let dataLen = 0;
+  let maxPacketSize = 0;
 
   const setupHeader = Buffer.alloc(2);
   setupHeader.writeUInt16LE(wwiseSetupPacket.length, 0);
   dataParts.push(setupHeader, wwiseSetupPacket);
-  const setupPacketOffset = 0;
   dataLen += 2 + wwiseSetupPacket.length;
+  const setupPacketLength = wwiseSetupPacket.length; // NOT an offset -- see a6.a.o() below
+  if (wwiseSetupPacket.length > maxPacketSize) maxPacketSize = wwiseSetupPacket.length;
 
-  const firstAudioPacketOffset = dataLen;
   for (const pkt of wwiseAudioPackets) {
     const h = Buffer.alloc(2);
     h.writeUInt16LE(pkt.length, 0);
     dataParts.push(h, pkt);
     dataLen += 2 + pkt.length;
+    if (pkt.length > maxPacketSize) maxPacketSize = pkt.length;
   }
 
   const data = Buffer.concat(dataParts, dataLen);
 
-  // ---- vorb-equivalent (42 bytes), to be embedded inside fmt ----
-  const vorb = Buffer.alloc(0x2A);
-  vorb.writeUInt32LE(sampleCount >>> 0, 0x00);
-  // mod_signal: empirically, every real .wem sample inspected has this
-  // field exactly equal to firstAudioPacketOffset (NOT a fixed "magic"
-  // constant -- ww2ogg's decoder only checks it against 4 known legacy
-  // values as a heuristic for whether to enable mod_packets, but the real
-  // encoder appears to just duplicate the offset here, and the actual
-  // game engine may validate it against that offset).
-  vorb.writeUInt32LE(firstAudioPacketOffset >>> 0, 0x04);
-  // 0x08: confirmed by inspecting 3 real .wem samples -- always exactly
-  // equal to the data chunk's total size (a redundant copy of it).
-  vorb.writeUInt32LE(dataLen >>> 0, 0x08);
-  vorb.writeUInt32LE(setupPacketOffset >>> 0, 0x10);
-  vorb.writeUInt32LE(firstAudioPacketOffset >>> 0, 0x14);
-  // 0x18: empirically confirmed (by testing 5 hand-patched variants of a
-  // known-working real .wem in-game) that this does NOT need to match
-  // any exact/computed value -- values too small (1, or half the real
-  // value) fail to play, while values at or above the real magnitude
-  // (real value, +1, x2, or even a wildly oversized 999999) all play
-  // fine. So it's some kind of buffer/prefetch size hint with a minimum
-  // threshold, not a checksum. We just use a constant comfortably above
-  // every real per-file value observed (402-478) with a lot of margin.
-  vorb.writeUInt32LE(16080, 0x18);
-  // 0x1c / 0x20: confirmed CONSTANT across all 3 real samples regardless
-  // of content/duration (16080 / 16560, always exactly 480 apart) --
-  // very likely a fixed Wwise-project-level prefetch/streaming setting,
-  // not computed per-file.
-  vorb.writeUInt32LE(16080, 0x1c);
-  vorb.writeUInt32LE(16560, 0x20);
-  vorb.writeUInt32LE(0, 0x24); // uid -- not validated for playback
-  vorb.writeUInt8(blocksize0Pow, 0x28);
-  vorb.writeUInt8(blocksize1Pow, 0x29);
-
-  // ---- fmt chunk (0x42 = 66 bytes) ----
-  const channelMask = channels === 1 ? 0x4 : 0x3; // AK speaker config
-  const configType = 1; // "standard"
-  const pseudoConfig = (channels & 0xFF) | ((configType & 0xF) << 8) | (channelMask << 12);
+  // ---- fmt chunk (0x42 = 66 bytes), byte layout ported field-for-field
+  // from the real app's a6.a.o() (decompiled from io_github_lnii11_bsed's
+  // classes.dex, class a6.a). This supersedes the earlier hand-guessed
+  // "vorb" layout, which had two field meanings wrong (a 16-bit field
+  // that's actually 32-bit at 0x10, and a field that's actually the
+  // setup packet's own byte length -- not the first-audio-packet offset
+  // -- at 0x1C).
+  const channelMask = channels === 1 ? 4 : 3; // AK speaker config (mono=4, stereo=3)
+  const configType = 1; // "standard" config
+  // Packed as its own little bitstream: channels(8 bits) + configType(4
+  // bits) + channelMask(19 bits), LSB-first per byte, 4 bytes total.
+  const channelConfigBlob = Buffer.alloc(4);
+  {
+    let bitpos = 0;
+    const bits = [];
+    const pushBits = (val, n) => { for (let i = 0; i < n; i++) bits.push((val >>> i) & 1); };
+    pushBits(channels, 8);
+    pushBits(configType, 4);
+    pushBits(channelMask, 19);
+    for (let i = 0; i < bits.length; i++) {
+      if (bits[i]) channelConfigBlob[i >> 3] |= 1 << (i & 7);
+    }
+  }
 
   const fmt = Buffer.alloc(0x42);
-  fmt.writeUInt16LE(0xFFFF, 0x00);
+  fmt.writeUInt16LE(0xFFFF, 0x00);          // wFormatTag
   fmt.writeUInt16LE(channels, 0x02);
   fmt.writeUInt32LE(sampleRate, 0x04);
   fmt.writeUInt32LE(avgBytesPerSecond, 0x08);
-  fmt.writeUInt16LE(0, 0x0C);
-  fmt.writeUInt16LE(0, 0x0E);
-  fmt.writeUInt16LE(0x30, 0x10); // extra fmt length = 48
-  fmt.writeUInt16LE(0, 0x12);
-  fmt.writeUInt32LE(pseudoConfig, 0x14);
-  vorb.copy(fmt, 0x18);
+  fmt.writeUInt16LE(0, 0x0C);                // blockAlign
+  fmt.writeUInt16LE(0, 0x0E);                // bitsPerSample
+  fmt.writeUInt32LE(48, 0x10);               // 4-byte field, value 48 (NOT a 16-bit cbSize)
+  channelConfigBlob.copy(fmt, 0x14);         // 4-byte packed channel config
+  fmt.writeUInt32LE(sampleCount >>> 0, 0x18);
+  fmt.writeUInt32LE(setupPacketLength >>> 0, 0x1C); // setup packet's own byte length
+  fmt.writeUInt32LE(dataLen >>> 0, 0x20);    // total data-chunk byte length
+  fmt.writeUInt16LE(0, 0x24);
+  fmt.writeUInt16LE(0, 0x26);                // packet-count/loop-related counter, 0 for non-looping single file
+  fmt.writeUInt32LE(0, 0x28);
+  fmt.writeUInt32LE(setupPacketLength >>> 0, 0x2C); // redundant copy, matches real layout
+  fmt.writeUInt16LE(maxPacketSize, 0x30);
+  fmt.writeUInt16LE(0, 0x32);
+  fmt.writeInt32LE(loopStart, 0x34);
+  fmt.writeInt32LE(loopEnd, 0x38);
+  fmt.writeUInt32LE(0, 0x3C);
+  fmt.writeUInt8(blocksize0Pow, 0x40);
+  fmt.writeUInt8(blocksize1Pow, 0x41);
 
   // ---- assemble RIFF/WAVE ----
   function chunk(tag, payload) {

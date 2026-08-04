@@ -6,12 +6,12 @@ const os = require('os');
 const express = require('express');
 const multer = require('multer');
 const archiver = require('archiver');
-const batchRoute = require('./batchRoute');
 
 const { getDurationMs, toWwiseVorbisBufferV2 } = require('./lib/audioConvert');
 const { patchIdAndDuration, locateDurationFields } = require('./lib/bnkPatcher');
 const supabaseStore = require('./lib/supabaseStore');
 const bnkCache = require('./lib/bnkCache');
+const batchRoute = require('./batchRoute');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -23,6 +23,7 @@ const upload = multer({ dest: os.tmpdir(), limits: { fileSize: 100 * 1024 * 1024
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '..', 'public')));
+app.use(batchRoute);
 
 app.get('/admin', (req, res) => res.sendFile(path.join(__dirname, '..', 'public', 'admin.html')));
 
@@ -227,8 +228,6 @@ app.post('/api/build', upload.fields([{ name: 'audio', maxCount: 1 }, { name: 'r
     cleanup();
   }
 });
-
-app.use(batchRoute);
 
 app.listen(PORT, () => {
   console.log(`Nhạc sảnh modder server đang chạy tại http://localhost:${PORT}`);

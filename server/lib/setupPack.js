@@ -38,16 +38,19 @@ function readStandardCodebookSignature(br) {
 
   const lookupType = br.read(4);
   if (lookupType > 1) throw new Error(`unsupported codebook lookup_type ${lookupType}`);
+  let vq = null;
   if (lookupType === 1) {
-    br.read(32); // min
-    br.read(32); // max
+    const minVal = br.read(32);
+    const maxVal = br.read(32);
     const valueLength = br.read(4);
-    br.read(1); // sequence_flag
+    const sequenceFlag = br.read(1);
     const quantvals = bookMaptype1Quantvals(entries, dims);
-    for (let i = 0; i < quantvals; i++) br.read(valueLength + 1);
+    const qvals = [];
+    for (let i = 0; i < quantvals; i++) qvals.push(br.read(valueLength + 1));
+    vq = [minVal, maxVal, valueLength, sequenceFlag, qvals];
   }
 
-  return { dims, entries, ordered, lengths };
+  return { dims, entries, ordered, lengths, lookupType, vq };
 }
 
 // Inverse of the manual reparse branch in wwriff.cpp's setup-packet
@@ -70,8 +73,8 @@ function packSetupPacket(standardSetupPacket, channels, codebookLib) {
   bw.write(codebookCountLess1, 8);
 
   for (let i = 0; i < codebookCount; i++) {
-    const { dims, entries, ordered, lengths } = readStandardCodebookSignature(br);
-    const codebookId = codebookLib.lookupId(dims, entries, ordered, lengths);
+    const { dims, entries, ordered, lengths, lookupType, vq } = readStandardCodebookSignature(br);
+    const codebookId = codebookLib.lookupId(dims, entries, ordered, lengths, lookupType, vq);
     if (codebookId === null) {
       throw new Error(
         `codebook (dims=${dims}, entries=${entries}, ordered=${ordered}) has no ` +
