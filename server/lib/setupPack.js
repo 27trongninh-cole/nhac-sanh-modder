@@ -71,6 +71,7 @@ function packSetupPacket(standardSetupPacket, channels, codebookLib) {
   const codebookCountLess1 = br.read(8);
   const codebookCount = codebookCountLess1 + 1;
   bw.write(codebookCountLess1, 8);
+  console.log(`[DEBUG] codebookCount=${codebookCount}, channels=${channels}`);
 
   for (let i = 0; i < codebookCount; i++) {
     const { dims, entries, ordered, lengths, lookupType, vq } = readStandardCodebookSignature(br);
@@ -81,6 +82,7 @@ function packSetupPacket(standardSetupPacket, channels, codebookLib) {
         'match in the external codebook library -- cannot encode this file'
       );
     }
+    console.log(`[DEBUG] codebook[${i}] dims=${dims} entries=${entries} ordered=${ordered} lookupType=${lookupType} -> id=${codebookId}`);
     bw.write(codebookId, 10);
   }
 
@@ -264,7 +266,11 @@ function packSetupPacket(standardSetupPacket, channels, codebookLib) {
   const framing = br.read(1);
   if (framing !== 1) throw new Error('expected framing bit == 1');
 
-  return { bytes: bw.getBytes(), modeBits, modeBlockflag };
+  console.log(`[DEBUG] modeCount=${modeCount} modeBits=${modeBits} modeBlockflag=${JSON.stringify(modeBlockflag)}`);
+  const outBytes = bw.getBytes();
+  console.log(`[DEBUG] setup packet output length=${outBytes.length} bytes, first 16 bytes hex=${outBytes.subarray(0, 16).toString('hex')}`);
+
+  return { bytes: outBytes, modeBits, modeBlockflag };
 }
 
 module.exports = { packSetupPacket };
