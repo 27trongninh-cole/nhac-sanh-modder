@@ -98,7 +98,14 @@ function buildWemV2({
   fmt.writeUInt16LE(0, 0x32);
   fmt.writeInt32LE(loopStart, 0x34);
   fmt.writeInt32LE(loopEnd, 0x38);
-  fmt.writeUInt32LE(0, 0x3C);
+  // abs 0x50 (rel 0x3C trong buffer fmt): xác nhận qua so sánh 2 file WEM
+  // thật hoàn toàn khác nội dung/kích thước (1.8MB và 39KB) -- byte giống
+  // hệt nhau tuyệt đối (78 22 92 c9) ở cả 2 -- đây là 1 hằng số cố định
+  // của build/project Wwise, KHÔNG phải checksum tính theo nội dung.
+  fmt.writeUInt8(0x78, 0x3C);
+  fmt.writeUInt8(0x22, 0x3D);
+  fmt.writeUInt8(0x92, 0x3E);
+  fmt.writeUInt8(0xC9, 0x3F);
   fmt.writeUInt8(blocksize0Pow, 0x40);
   fmt.writeUInt8(blocksize1Pow, 0x41);
 
