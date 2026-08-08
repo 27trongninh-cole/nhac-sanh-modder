@@ -93,7 +93,16 @@ function buildWemV2({
   // exact same file fine).
   fmt.writeUInt16LE(wwiseAudioPackets.length & 0xFFFF, 0x26);
   fmt.writeUInt32LE(0, 0x28);
-  fmt.writeUInt32LE(setupPacketLength >>> 0, 0x2C); // redundant copy, matches real layout
+  // abs 0x40 (rel 0x2C): ĐÂY LÀ "audio_offset" theo đúng source code thật
+  // của vgmstream (src/meta/wwise.c) -- KHÔNG PHẢI "setupPacketLength lặp
+  // lại" như hiểu nhầm trước đây. audio_offset = seek_size (ta không có
+  // bảng seek nên = 0) + tổng byte thật sự chiếm bởi setup packet TRONG
+  // data chunk (bao gồm cả 2-byte length-prefix của chính nó). Đây là vị
+  // trí byte nơi audio packet đầu tiên thực sự bắt đầu -- ghi sai field
+  // này khiến engine tính lệch hoàn toàn điểm bắt đầu đọc audio.
+  const seekTableSize = 0; // không có bảng seek
+  const audioOffset = seekTableSize + 2 + wwiseSetupPacket.length;
+  fmt.writeUInt32LE(audioOffset >>> 0, 0x2C);
   fmt.writeUInt16LE(maxPacketSize, 0x30);
   fmt.writeUInt16LE(0, 0x32);
   fmt.writeInt32LE(loopStart, 0x34);
